@@ -3,6 +3,7 @@ from datetime import date
 import asyncpg
 from dataclasses import dataclass
 
+
 @dataclass
 class BuyerOrder:
     id: int

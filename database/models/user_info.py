@@ -1,6 +1,7 @@
 import asyncpg
 from dataclasses import dataclass
 
+
 @dataclass
 class UserInfo:
     id: int

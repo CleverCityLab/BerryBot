@@ -2,6 +2,7 @@ from typing import Optional
 import asyncpg
 from dataclasses import dataclass
 
+
 @dataclass
 class BuyerInfo:
     tg_user_id: int
