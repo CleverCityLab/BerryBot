@@ -1,14 +1,10 @@
-import re
-import asyncio
-import logging
-from typing import Any, Optional
-from datetime import timedelta, datetime
+from aiogram import Router
+from utils.logger import get_logger
 
-import phonenumbers
+log = get_logger("[Bot.Admin]")
 
-from aiogram import Router, types, F
-from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
+client_router = Router()
+
+
+def register_client(dp):
+    dp.include_router(client_router)

@@ -1,8 +1,10 @@
-import asyncio
-from datetime import datetime
-from typing import Optional
+from aiogram import Router
+from utils.logger import get_logger
 
-from aiogram import Router, types, F
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.exceptions import TelegramBadRequest
+log = get_logger("[Bot.Admin]")
+
+admin_router = Router()
+
+
+def register_admin(dp):
+    dp.include_router(admin_router)
