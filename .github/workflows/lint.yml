@@ -1,0 +1,26 @@
+name: Code Style Check
+
+on: [ pull_request ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install linters
+        run: |
+          pip install flake8 isort
+
+      - name: Run flake8 (respects setup.cfg)
+        run: flake8 .
+
+      - name: Run isort (respects setup.cfg)
+        run: isort .
