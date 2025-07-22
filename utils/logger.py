@@ -20,12 +20,9 @@ DEFAULT_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_QUIET_LIBS: list[str] = [
     "aiogram",
-    "aiokafka",
-    "aiosend",
     "asyncio",
     "docker",
     "httpx",
-    "pyrogram",
     "urllib3",
 ]
 
