@@ -5,6 +5,8 @@ from logging.handlers import RotatingFileHandler
 from typing import Union
 from datetime import datetime, timezone, timedelta
 
+from utils.config import TIMEZONE_OFFSET
+
 _RESET = "\x1b[0m"
 _LEVEL_COLOURS = {
     logging.DEBUG: "\x1b[36m",             # cyan
