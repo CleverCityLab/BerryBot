@@ -12,3 +12,5 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_MIN_POOL_SIZE = int(os.getenv("DB_MIN_POOL_SIZE", "10"))
 DB_MAX_POOL_SIZE = int(os.getenv("DB_MAX_POOL_SIZE", "100"))
+
+TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "3"))
