@@ -1,5 +1,3 @@
-import logging
-
 from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router, F
 from aiogram.filters import CommandStart
@@ -507,20 +505,6 @@ async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_mana
     await call.message.edit_text("Выберите нужные позиции:", reply_markup=get_all_products(products, cart))
 
 
-@client_router.callback_query(CreateOrder.choose_delivery, F.data == "del:back")
-async def back_from_delivery_to_cart(call: CallbackQuery, state: FSMContext, product_position_manager):
-    data = await state.get_data()
-    cart: dict[int, int] = data.get("cart", {})
-    products = await product_position_manager.list_all_order_positions()
-
-    await state.set_state(CreateOrder.choose_products)
-    await call.message.edit_text(
-        "Выберите нужные позиции:",
-        reply_markup=get_all_products(products, cart)
-    )
-    await call.answer()
-
-
 @client_router.callback_query(CreateOrder.choose_delivery, F.data.startswith("del:"))
 async def choose_delivery(call: CallbackQuery, state: FSMContext, buyer_info_manager, product_position_manager):
     await call.answer()
@@ -536,7 +520,7 @@ async def choose_delivery(call: CallbackQuery, state: FSMContext, buyer_info_man
 
 
 @client_router.callback_query(F.data == "addr:back")
-async def back_from_delivery_to_cart(call: CallbackQuery, state: FSMContext):
+async def back_from_address_to_delivery(call: CallbackQuery, state: FSMContext):
     await state.set_state(CreateOrder.choose_delivery)
     await call.message.edit_text("Способ получения:", reply_markup=choice_of_delivery())
     await call.answer()

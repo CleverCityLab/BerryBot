@@ -1,4 +1,3 @@
-from datetime import datetime
 from functools import wraps
 import logging
 
@@ -52,8 +51,8 @@ async def handle_telegram_error(
 def _get_ctx(args, kwargs):
     message = next((a for a in args if isinstance(a, types.Message)), None)
     call = next((a for a in args if isinstance(a, types.CallbackQuery)), None)
-    state = next((a for a in args if isinstance(a, FSMContext)), None) \
-            or next((v for v in kwargs.values() if isinstance(v, FSMContext)), None)
+    state = next((a for a in args if isinstance(a, FSMContext)), None) or next(
+        (v for v in kwargs.values() if isinstance(v, FSMContext)), None)
     return message, call, state
 
 

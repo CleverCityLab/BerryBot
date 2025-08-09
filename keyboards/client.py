@@ -88,7 +88,7 @@ def get_all_products(products: list[dict], cart: dict[int, int]) -> InlineKeyboa
 
 def choice_of_delivery() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text=f"Самовывоз", callback_data="del:pickup")],
+        [InlineKeyboardButton(text="Самовывоз", callback_data="del:pickup")],
         [InlineKeyboardButton(text="Доставка", callback_data="del:delivery")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="cart:back")]
     ]
