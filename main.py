@@ -7,6 +7,11 @@ from contextlib import suppress
 from aiogram import Bot, Dispatcher
 
 from database.async_db import AsyncDatabase
+from database.managers.buyer_info_manager import BuyerInfoManager
+from database.managers.buyer_order_manager import BuyerOrderManager
+from database.managers.order_items_manager import OrderItemsManager
+from database.managers.product_position_manager import ProductPositionManager
+from database.managers.user_info_manager import UserInfoManager
 from utils.logger import get_logger, setup_logging
 from utils.config import (
     BOT_TOKEN, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
@@ -59,9 +64,20 @@ async def main():
     await db.connect()
     log.info("[Bot] Подключение к базе данных установлено [✓]")
 
+    buyer_info_manager = BuyerInfoManager(db)
+    buyer_order_manager = BuyerOrderManager(db)
+    order_items_manager = OrderItemsManager(db)
+    product_position_manager = ProductPositionManager(db)
+    user_info_manager = UserInfoManager(db)
+
     dp.update.middleware(
         ManagerMiddleware(
             db=db,
+            buyer_info_manager=buyer_info_manager,
+            buyer_order_manager=buyer_order_manager,
+            order_items_manager=order_items_manager,
+            product_position_manager=product_position_manager,
+            user_info_manager=user_info_manager,
             bot=bot,
         )
     )
