@@ -1,6 +1,6 @@
 from collections import namedtuple
 from datetime import date
-from typing import Sequence, Optional
+from typing import Optional
 
 from database.async_db import AsyncDatabase
 from database.models.buyer_orders import BuyerOrders

@@ -1,5 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from utils.statuses import S_WAITING, S_READY, S_TRANSFERRING, S_FINISHED, S_CANCELLED
+from utils.statuses import S_WAITING, S_READY, S_TRANSFERRING, S_FINISHED
 
 
 def admin_positions_list(positions: list[dict]) -> InlineKeyboardMarkup:
