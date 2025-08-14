@@ -447,7 +447,7 @@ async def start_create(call: CallbackQuery, state: FSMContext, product_position_
     await call.answer()
     await state.update_data(cart={})
 
-    products = await product_position_manager.list_all_order_positions()  # [{id,title,price,quantity}, ...]
+    products = await product_position_manager.list_not_empty_order_positions()  # [{id,title,price,quantity}, ...]
     await state.set_state(CreateOrder.choose_products)
     await call.message.edit_text(
         "Выберите нужные позиции:",
@@ -459,7 +459,7 @@ async def start_create(call: CallbackQuery, state: FSMContext, product_position_
 async def back_from_delivery_to_cart(call: CallbackQuery, state: FSMContext, product_position_manager):
     data = await state.get_data()
     cart: dict[int, int] = data.get("cart", {})
-    products = await product_position_manager.list_all_order_positions()
+    products = await product_position_manager.list_not_empty_order_positions()
 
     await state.set_state(CreateOrder.choose_products)
     await call.message.edit_text(
@@ -471,7 +471,7 @@ async def back_from_delivery_to_cart(call: CallbackQuery, state: FSMContext, pro
 
 @client_router.callback_query(CreateOrder.choose_products, F.data.startswith("cart:"))
 async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_manager):
-    products = await product_position_manager.list_all_order_positions()
+    products = await product_position_manager.list_not_empty_order_positions()
     data = await state.get_data()
     cart: dict[int, int] = data.get("cart", {})
 
@@ -603,7 +603,7 @@ async def confirm_bonus(call: CallbackQuery, state: FSMContext, buyer_info_manag
 async def confirm_restart(call: CallbackQuery, state: FSMContext, product_position_manager):
     await call.answer()
     await state.update_data(cart={})
-    products = await product_position_manager.list_all_order_positions()
+    products = await product_position_manager.list_not_empty_order_positions()
     await state.set_state(CreateOrder.choose_products)
     await call.message.edit_text("Выберите нужные позиции:", reply_markup=get_all_products(products, cart={}))
 

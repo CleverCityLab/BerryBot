@@ -5,8 +5,10 @@ from typing import Sequence, Optional
 from database.async_db import AsyncDatabase
 from database.models.buyer_orders import BuyerOrders
 
-ACTIVE_STATUSES: Sequence[str] = ("waiting", "transferring", "ready")
-FINISHED_STATUSES: Sequence[str] = ("finished", "cancelled")
+from utils.statuses import (
+    ACTIVE_STATUSES, FINISHED_STATUSES, AWAITING_PICKUP,
+    ALLOWED_FROM, S_FINISHED, S_CANCELLED
+)
 
 Item = namedtuple("Item", "title price qty")
 
@@ -212,3 +214,123 @@ class BuyerOrderManager:
                     )
 
         return True, None
+
+    async def get_order_by_id(self, order_id: int) -> BuyerOrders | None:
+        rec = await self.db.fetchrow("SELECT * FROM buyer_orders WHERE id = $1", order_id)
+        return BuyerOrders.from_record(rec) if rec else None
+
+    async def admin_set_status(self, order_id: int, to_status: str) -> bool:
+        # читаем текущее состояние
+        row = await self.db.fetchrow(
+            "SELECT status, delivery_way FROM buyer_orders WHERE id = $1",
+            order_id,
+        )
+        if not row:
+            return False
+
+        cur, way = row["status"], row["delivery_way"]
+
+        allowed_from = set(ALLOWED_FROM.get(to_status, set()))
+        if to_status == S_FINISHED:
+            allowed_from = {"ready"} if way == "pickup" else {"transferring"}
+
+        if cur not in allowed_from:
+            return False
+
+        val = await self.db.fetchval(
+            """
+            UPDATE buyer_orders
+            SET status      = $2::order_status,
+                finished_at = CASE
+                                  WHEN $2::order_status = ANY ($3::order_status[]) THEN CURRENT_DATE
+                                  ELSE finished_at
+                    END
+            WHERE id = $1
+              AND status = ANY ($4::order_status[])
+            RETURNING 1
+            """,
+            order_id,
+            to_status,
+            [S_FINISHED, S_CANCELLED],
+            list(allowed_from),
+        )
+        return bool(val)
+
+    async def admin_cancel(self, order_id: int) -> bool:
+        updated = await self.db.execute(
+            "UPDATE buyer_orders SET status = $2, finished_at = CURRENT_DATE "
+            "WHERE id = $1 AND status = ANY($3::order_status[])",
+            order_id, S_CANCELLED, ["waiting", "ready"]
+        )
+        return updated.upper().startswith("UPDATE")
+
+    async def admin_today_revenue(self) -> int:
+        sql = """
+              SELECT COALESCE(SUM(t.sum - t.used), 0)::int
+              FROM (SELECT o.id, \
+                           COALESCE(SUM(p.price * i.qty), 0) AS sum, \
+                           COALESCE(o.used_bonus, 0)         AS used \
+                    FROM buyer_orders o \
+                             JOIN order_items i ON i.order_id = o.id \
+                             JOIN product_position p ON p.id = i.position_id \
+                    WHERE o.status = 'finished' \
+                      AND o.finished_at = CURRENT_DATE \
+                    GROUP BY o.id, o.used_bonus) t \
+              """
+        return int(await self.db.fetchval(sql))
+
+    async def admin_count_total(self) -> int:
+        return int(await self.db.fetchval("SELECT COUNT(*) FROM buyer_orders"))
+
+    async def admin_count_active(self) -> int:
+        sql = "SELECT COUNT(*) FROM buyer_orders WHERE status = ANY($1::order_status[])"
+        return int(await self.db.fetchval(sql, list(ACTIVE_STATUSES)))
+
+    async def admin_count_awaiting_pickup(self) -> int:
+        sql = "SELECT COUNT(*) FROM buyer_orders WHERE status = ANY($1::order_status[])"
+        return int(await self.db.fetchval(sql, list(AWAITING_PICKUP)))
+
+    async def admin_list_orders(self, finished: bool) -> list[dict]:
+        statuses = FINISHED_STATUSES if finished else ACTIVE_STATUSES
+        sql = """
+              SELECT id, registration_date
+              FROM buyer_orders
+              WHERE status = ANY ($1::order_status[])
+              ORDER BY registration_date DESC, id DESC \
+              """
+        return [dict(r) for r in await self.db.fetch(sql, list(statuses))]
+
+    async def admin_get_order(self, order_id: int) -> Optional[dict]:
+        head = await self.db.fetchrow("""
+                                      SELECT o.id,
+                                             o.status,
+                                             o.delivery_way,
+                                             o.registration_date,
+                                             o.delivery_date,
+                                             o.finished_at,
+                                             o.delivery_address,
+                                             o.used_bonus,
+                                             b.name_surname,
+                                             b.tel_num,
+                                             b.tg_username
+                                      FROM buyer_orders o
+                                               JOIN user_info u ON u.id = o.buyer_id
+                                               JOIN buyer_info b ON b.user_id = u.id
+                                      WHERE o.id = $1
+                                      """, order_id)
+        if not head:
+            return None
+
+        items = await self.db.fetch("""
+                                    SELECT p.title, p.price, i.qty
+                                    FROM order_items i
+                                             JOIN product_position p ON p.id = i.position_id
+                                    WHERE i.order_id = $1
+                                    ORDER BY p.id
+                                    """, order_id)
+
+        total = sum(r["price"] * r["qty"] for r in items)
+        data = dict(head)
+        data["items"] = [dict(r) for r in items]
+        data["total"] = int(total)
+        return data

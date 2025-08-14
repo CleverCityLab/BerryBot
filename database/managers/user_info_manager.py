@@ -19,3 +19,11 @@ class UserInfoManager:
 
         select_sql = "SELECT id FROM user_info WHERE tg_user_id = $1;"
         return await self.db.fetchval(select_sql, tg_user_id)
+
+    async def list_all_tg_user_ids(self) -> list[int]:
+        sql = "SELECT tg_user_id FROM user_info ORDER BY id"
+        rows = await self.db.fetch(sql)
+        return [int(r["tg_user_id"]) for r in rows]
+
+    async def count_all(self) -> int:
+        return int(await self.db.fetchval("SELECT COUNT(*) FROM user_info"))
