@@ -7,6 +7,7 @@ DROP TABLE IF EXISTS product_position CASCADE;
 DROP TABLE IF EXISTS buyer_info CASCADE;
 DROP TABLE IF EXISTS user_info CASCADE;
 DROP TABLE IF EXISTS payments CASCADE;
+DROP TABLE IF EXISTS order_items CASCADE;
 
 -- 2. Удаление ENUM‑типов
 DROP TYPE IF EXISTS finish_status;

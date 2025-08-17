@@ -1,20 +1,40 @@
 from aiogram import BaseMiddleware, Bot
 
 from database.async_db import AsyncDatabase
+from database.managers.buyer_info_manager import BuyerInfoManager
+from database.managers.buyer_order_manager import BuyerOrderManager
+from database.managers.order_items_manager import OrderItemsManager
+from database.managers.product_position_manager import ProductPositionManager
+from database.managers.user_info_manager import UserInfoManager
 
 
 class ManagerMiddleware(BaseMiddleware):
     def __init__(
             self,
             db: AsyncDatabase,
+            buyer_info_manager: BuyerInfoManager,
+            buyer_order_manager: BuyerOrderManager,
+            product_position_manager: ProductPositionManager,
+            user_info_manager: UserInfoManager,
+            order_items_manager: OrderItemsManager,
             bot: Bot,
     ):
         super().__init__()
         self.db = db
+        self.buyer_info_manager = buyer_info_manager
+        self.buyer_order_manager = buyer_order_manager
+        self.product_position_manager = product_position_manager
+        self.user_info_manager = user_info_manager
+        self.order_items_manager = order_items_manager
         self.bot = bot
 
     async def __call__(self, handler, event, data):
         data["db"] = self.db
+        data["buyer_info_manager"] = self.buyer_info_manager
+        data["buyer_order_manager"] = self.buyer_order_manager
+        data["product_position_manager"] = self.product_position_manager
+        data["user_info_manager"] = self.user_info_manager
+        data["order_items_manager"] = self.order_items_manager
         data["bot"] = self.bot
 
         return await handler(event, data)
