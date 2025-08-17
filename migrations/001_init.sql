@@ -21,6 +21,13 @@ CREATE TYPE finish_status AS ENUM (
     'canceled'
 );
 
+CREATE TYPE payment_status AS ENUM (
+    'pending',
+    'succeeded',
+    'canceled'
+);
+
+
 --
 -- 2. Таблица user_info
 --
@@ -78,3 +85,23 @@ CREATE TABLE buyer_orders (
         ON DELETE RESTRICT
 );
 
+--
+-- 6. Таблица payments
+--    Связь оплаты с пользователем и заказом
+--
+CREATE TABLE payments (
+    id SERIAL PRIMARY KEY,
+    tg_user_id BIGINT NOT NULL,
+    amount NUMERIC(10, 2) NOT NULL CHECK (amount >= 0),
+    yookassa_id VARCHAR(255) UNIQUE NOT NULL,
+    status payment_status NOT NULL DEFAULT 'pending',
+    order_id BIGINT,
+    CONSTRAINT fk_payments_user FOREIGN KEY (tg_user_id)
+        REFERENCES user_info (tg_user_id)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE,
+    CONSTRAINT fk_payments_order FOREIGN KEY (order_id)
+        REFERENCES buyer_orders (id)
+        ON UPDATE CASCADE
+        ON DELETE SET NULL
+);
