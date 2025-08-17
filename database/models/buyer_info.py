@@ -5,17 +5,17 @@ from dataclasses import dataclass
 
 @dataclass
 class BuyerInfo:
-    tg_user_id: int
+    user_id: int
     name_surname: str
-    tel_num: int
+    tel_num: str
     tg_username: Optional[str]
     address: Optional[str]
-    bonus_num: int
+    bonus_num: int = 0
 
     @classmethod
     def from_record(cls, record: asyncpg.Record) -> "BuyerInfo":
         return cls(
-            tg_user_id=record["tg_user_id"],
+            user_id=record["user_id"],
             name_surname=record["name_surname"],
             tel_num=record["tel_num"],
             tg_username=record.get("tg_username"),
