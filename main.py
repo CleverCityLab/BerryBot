@@ -10,7 +10,6 @@ from database.async_db import AsyncDatabase
 from database.managers.buyer_info_manager import BuyerInfoManager
 from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.order_items_manager import OrderItemsManager
-from database.managers.payments_manager import PaymentsManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.user_info_manager import UserInfoManager
 from utils.logger import get_logger, setup_logging
