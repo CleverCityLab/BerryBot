@@ -619,11 +619,11 @@ async def confirm_restart(call: CallbackQuery, state: FSMContext, product_positi
 
 @client_router.callback_query(CreateOrder.confirm, F.data == "confirm:ok")
 async def confirm_ok(
-    call: CallbackQuery,
-    state: FSMContext,
-    buyer_order_manager: BuyerOrderManager,
-    product_position_manager: ProductPositionManager,
-    buyer_info_manager: BuyerInfoManager
+        call: CallbackQuery,
+        state: FSMContext,
+        buyer_order_manager: BuyerOrderManager,
+        product_position_manager: ProductPositionManager,
+        buyer_info_manager: BuyerInfoManager
 ):
     await call.answer()
     data = await state.get_data()
