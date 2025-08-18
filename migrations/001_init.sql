@@ -6,6 +6,7 @@
 --
 CREATE TYPE order_status AS ENUM (
     'waiting',
+    'pending_payment',
     'ready',
     'transferring',
     'finished',
@@ -101,13 +102,14 @@ CREATE INDEX idx_product_position_title ON product_position (title);
 -- 6. Таблица payments
 --    Связь оплаты с пользователем и заказом
 --
-CREATE TABLE payments (
-    id SERIAL PRIMARY KEY,
-    tg_user_id BIGINT NOT NULL,
-    amount NUMERIC(10, 2) NOT NULL CHECK (amount >= 0),
+CREATE TABLE payments
+(
+    id          SERIAL PRIMARY KEY,
+    tg_user_id  BIGINT              NOT NULL,
+    amount      NUMERIC(10, 2)      NOT NULL CHECK (amount >= 0),
     yookassa_id VARCHAR(255) UNIQUE NOT NULL,
-    status payment_status NOT NULL DEFAULT 'pending',
-    order_id BIGINT,
+    status      payment_status      NOT NULL DEFAULT 'pending',
+    order_id    BIGINT,
     CONSTRAINT fk_payments_user FOREIGN KEY (tg_user_id)
         REFERENCES user_info (tg_user_id)
         ON UPDATE CASCADE

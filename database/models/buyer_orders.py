@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 class OrderStatus(str, Enum):
     WAITING = "waiting"
+    PENDING_PAYMENT = "pending_payment"
     TRANSFERRING = "transferring"
     READY = "ready"
     FINISHED = "finished"

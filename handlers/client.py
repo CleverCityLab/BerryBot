@@ -1,15 +1,15 @@
-from aiogram.exceptions import TelegramBadRequest
 from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery
 
-from utils.constants import status_map, delivery_map
-from utils.logger import get_logger
-from utils.phone import normalize_phone
-from utils.secrets import get_admin_ids
-
+import keyboards.client
+from database.managers.buyer_info_manager import BuyerInfoManager
+from database.managers.buyer_order_manager import BuyerOrderManager
+from database.managers.product_position_manager import ProductPositionManager
+from database.managers.user_info_manager import UserInfoManager
 from keyboards.client import (
     get_main_inline_keyboard,
     get_orders_inline_keyboard,
@@ -21,6 +21,13 @@ from keyboards.client import (
     delivery_address_select,
     confirm_create_order, get_profile_inline_keyboard
 )
+from utils.config import PAYMENT_TOKEN
+from utils.constants import status_map, delivery_map
+from utils.logger import get_logger
+from utils.phone import normalize_phone
+from utils.secrets import get_admin_ids
+
+MIN_PAYMENT_AMOUNT = 60
 
 log = get_logger("[Bot.Client]")
 
@@ -74,6 +81,7 @@ class CreateOrder(StatesGroup):
     choose_delivery = State()
     enter_address = State()
     confirm = State()
+    waiting_payment = State()
 
 
 class ProfileEdit(StatesGroup):
@@ -86,7 +94,8 @@ def register_client(dp):
 
 
 @client_router.message(CommandStart())
-async def client_start(message: Message, state: FSMContext, user_info_manager, buyer_info_manager):
+async def client_start(message: Message, state: FSMContext, user_info_manager: UserInfoManager,
+                       buyer_info_manager: BuyerInfoManager):
     log.info(f"[Bot.Client] Новый старт пользователя {message.from_user.id}")
     user_id = await user_info_manager.add_user(message.from_user.id)
 
@@ -609,31 +618,137 @@ async def confirm_restart(call: CallbackQuery, state: FSMContext, product_positi
 
 
 @client_router.callback_query(CreateOrder.confirm, F.data == "confirm:ok")
-async def confirm_ok(call: CallbackQuery, state: FSMContext, buyer_order_manager, product_position_manager):
+async def confirm_ok(
+        call: CallbackQuery,
+        state: FSMContext,
+        # Добавляем правильные type hint'ы для всех менеджеров
+        buyer_order_manager: BuyerOrderManager,
+        product_position_manager: ProductPositionManager,
+        buyer_info_manager: BuyerInfoManager  # <-- Добавлен недостающий аргумент
+):
     await call.answer()
     data = await state.get_data()
     cart: dict[int, int] = data["cart"]
     delivery_way: str = data.get("delivery_way", "pickup")
     address: str | None = data.get("address")
     used_bonus: int = data.get("used_bonus", 0)
+    total: int = data.get("total", 0)
 
-    ok, err = await buyer_order_manager.create_order(
+    # 1. Создаем заказ в базе
+    order_id, err = await buyer_order_manager.create_order(
         tg_user_id=call.from_user.id,
-        items=cart,  # {position_id: qty}
-        delivery_way=delivery_way,
-        address=address,
-        used_bonus=used_bonus,
+        items=cart, delivery_way=delivery_way, address=address, used_bonus=used_bonus
     )
-    if not ok:
-        await call.answer(err or "Недостаточно товара на складе", show_alert=True)
-        products = await product_position_manager.list_all()
-        await call.message.edit_text("Обновили остатки, выберите заново:",
-                                     reply_markup=get_all_products(products, cart={}))
-        await state.set_state(CreateOrder.choose_products)
+
+    if not order_id:
+        await call.message.answer(err or "Не удалось создать заказ. Попробуйте снова.")
         return
 
+    # 2. Рассчитываем сумму к оплате
+    amount_to_pay = total - used_bonus
+
+    # 3. Проверяем сумму и решаем, что делать
+    if amount_to_pay >= MIN_PAYMENT_AMOUNT:
+        # --- СЛУЧАЙ 1: Сумма достаточна для онлайн-оплаты ---
+        try:
+            log.info(f"Выставление счета на сумму {amount_to_pay} для заказа #{order_id}")
+            await call.message.delete()
+
+            await call.bot.send_invoice(
+                chat_id=call.from_user.id,
+                title=f"Оплата заказа №{order_id}",
+                description="Оплата товаров из корзины",
+                payload=f"order_payment:{order_id}",
+                provider_token=PAYMENT_TOKEN,
+                currency="RUB",
+                prices=[LabeledPrice(label=f"Заказ №{order_id}", amount=int(amount_to_pay * 100))],
+                reply_markup=keyboards.client.cancel_payment(amount_to_pay, order_id)
+            )
+            await state.set_state(CreateOrder.waiting_payment)
+
+        except TelegramBadRequest as e:
+            log.error(f"Ошибка при выставлении счета для заказа #{order_id}: {e}")
+            await call.message.answer(
+                "❗️ Произошла ошибка при создании счета на оплату. "
+                "Ваш заказ был автоматически отменен. Пожалуйста, попробуйте снова."
+            )
+            await buyer_order_manager.cancel_order(order_id)
+            await state.clear()
+
+            is_admin = call.from_user.id in get_admin_ids()
+            bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
+            await call.message.answer(
+                text="Выбери действие: \n" f"Накоплено бонусов: `{bonuses or 0}` руб.",
+                parse_mode="Markdown",
+                reply_markup=get_main_inline_keyboard(is_admin)
+            )
+
+
+    elif amount_to_pay > 0:
+
+        # --- СЛУЧАЙ 2: Сумма > 0, но < минимальной ---
+
+        log.info(f"Сумма {amount_to_pay} для заказа #{order_id} слишком мала.")
+
+        # 1. Отменяем заказ в базе данных, возвращая товары и бонусы
+
+        await buyer_order_manager.cancel_order(order_id)
+
+        # 2. Очищаем состояние FSM
+
+        await state.clear()
+
+        # 3. Сообщение с причиной
+        await call.message.answer(text=f"Заказ отменен: сумма {amount_to_pay} руб. слишком мала для онлайн-оплаты.")
+        # 4. Получаем данные для главного меню
+        is_admin = call.from_user.id in get_admin_ids()
+        bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
+        # 5. Редактируем сообщение, превращая его в главное меню
+        await call.message.edit_text(
+            text="Выбери действие: \n"
+                 f"Накоплено бонусов: `{bonuses if bonuses else 0}` руб.",
+            parse_mode="Markdown",
+            reply_markup=get_main_inline_keyboard(is_admin)
+        )
+
+    else:
+        # --- СЛУЧАЙ 3: Заказ полностью оплачен бонусами ---
+        log.info(f"Заказ #{order_id} полностью оплачен бонусами.")
+        await buyer_order_manager.mark_order_as_paid_by_bonus(order_id)
+        await state.clear()
+        await call.message.edit_text("✅ Заказ успешно оформлен и оплачен бонусами. Мы скоро свяжемся с вами.")
+
+
+# Обработчик PreCheckoutQuery
+@client_router.pre_checkout_query()
+async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery, buyer_order_manager):
+    # Здесь можно добавить дополнительную проверку (например, наличие товара)
+    order_id = int(pre_checkout_query.invoice_payload.split(":")[1])
+    log.info(f"Получен pre-checkout запрос для заказа #{order_id}")
+
+    # Подтверждаем, что готовы принять платеж
+    await pre_checkout_query.answer(ok=True)
+    log.info(f"Ответили ok=True на pre-checkout для заказа #{order_id}")
+
+
+# Обработчик успешной оплаты
+@client_router.message(F.successful_payment, CreateOrder.waiting_payment)
+async def successful_payment_handler(message: Message, state: FSMContext, buyer_order_manager):
+    payment_info = message.successful_payment
+    order_id = int(payment_info.invoice_payload.split(":")[1])
+
+    log.info(f"Оплата за заказ #{order_id} на сумму {payment_info.total_amount / 100} "
+             f"{payment_info.currency} прошла успешно!")
+
+    # Обновляем статус заказа в базе данных на "оплачен"
+    # Вам нужно будет создать этот метод в вашем `buyer_order_manager`
+    await buyer_order_manager.mark_order_as_paid(order_id, payment_info)
+
+    await message.answer(
+        "Оплата прошла успешно! ✅\n"
+        f"Ваш заказ №{order_id} принят в работу. Мы скоро свяжемся с вами."
+    )
     await state.clear()
-    await call.message.edit_text("Заказ оформлен! Мы свяжемся с вами для подтверждения.")  # TODO: добавить оплату
 
 
 @client_router.callback_query(F.data == "noop")
@@ -713,3 +828,38 @@ async def msg_set_phone(message: Message, state: FSMContext, buyer_info_manager)
     await state.clear()
     await message.answer("Номер телефона *успешно изменён* ✅", parse_mode="Markdown")
     await show_profile_menu(message, buyer_info_manager)
+
+
+@client_router.callback_query(F.data.startswith("cancel_invoice:"))
+async def cancel_payment_invoice(call: CallbackQuery, state: FSMContext, buyer_order_manager, buyer_info_manager):
+    """
+    Обрабатывает отмену заказа на этапе выставленного счета.
+    Редактирует сообщение, превращая его в главное меню.
+    """
+    order_id = int(call.data.split(":")[1])
+
+    # Отменяем заказ в базе данных (возвращаем товары и бонусы)
+    await buyer_order_manager.cancel_order(order_id)
+
+    await call.answer("Заказ отменён", show_alert=True)
+
+    # Очищаем состояние FSM
+    await state.clear()
+
+    try:
+        # 1. Удаляем сообщение со счетом, которое нельзя редактировать
+        await call.message.delete()
+    except TelegramBadRequest as e:
+        # Игнорируем ошибку, если сообщение уже было удалено (например, при двойном клике)
+        log.warning(f"Не удалось удалить сообщение при отмене счета: {e}")
+
+        # 2. Отправляем абсолютно новое сообщение с главным меню
+    is_admin = call.from_user.id in get_admin_ids()
+    bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
+
+    await call.message.answer(
+        text="Выбери действие: \n"
+             f"Накоплено бонусов: `{bonuses if bonuses else 0}` руб.",
+        parse_mode="Markdown",
+        reply_markup=get_main_inline_keyboard(is_admin)
+    )

@@ -127,3 +127,18 @@ def get_profile_inline_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Изменить номер телефона", callback_data="profile:edit-phone")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back-main")],
     ])
+
+
+def cancel_payment(amount_to_pay: int, order_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=f"💳 Оплатить {amount_to_pay} RUB",
+                pay=True  # <-- Вот специальный флаг для кнопки оплаты
+            ),
+            InlineKeyboardButton(
+                text="❌ Отменить",
+                callback_data=f"cancel_invoice:{order_id}"
+            )
+        ]
+    ])
