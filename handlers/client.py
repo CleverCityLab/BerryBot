@@ -683,21 +683,13 @@ async def confirm_ok(
                 reply_markup=get_main_inline_keyboard(is_admin)
             )
 
-
     elif amount_to_pay > 0:
-
         # --- СЛУЧАЙ 2: Сумма > 0, но < минимальной ---
-
         log.info(f"Сумма {amount_to_pay} для заказа #{order_id} слишком мала.")
-
         # 1. Отменяем заказ в базе данных, возвращая товары и бонусы
-
         await buyer_order_manager.cancel_order(order_id)
-
         # 2. Очищаем состояние FSM
-
         await state.clear()
-
         # 3. Сообщение с причиной
         await call.message.answer(text=f"Заказ отменен: сумма {amount_to_pay} руб. слишком мала для онлайн-оплаты.")
         # 4. Получаем данные для главного меню
@@ -837,26 +829,20 @@ async def cancel_payment_invoice(call: CallbackQuery, state: FSMContext, buyer_o
     Редактирует сообщение, превращая его в главное меню.
     """
     order_id = int(call.data.split(":")[1])
-
     # Отменяем заказ в базе данных (возвращаем товары и бонусы)
     await buyer_order_manager.cancel_order(order_id)
-
     await call.answer("Заказ отменён", show_alert=True)
-
     # Очищаем состояние FSM
     await state.clear()
-
     try:
         # 1. Удаляем сообщение со счетом, которое нельзя редактировать
         await call.message.delete()
     except TelegramBadRequest as e:
         # Игнорируем ошибку, если сообщение уже было удалено (например, при двойном клике)
         log.warning(f"Не удалось удалить сообщение при отмене счета: {e}")
-
         # 2. Отправляем абсолютно новое сообщение с главным меню
     is_admin = call.from_user.id in get_admin_ids()
     bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
-
     await call.message.answer(
         text="Выбери действие: \n"
              f"Накоплено бонусов: `{bonuses if bonuses else 0}` руб.",
