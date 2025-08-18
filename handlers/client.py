@@ -619,12 +619,11 @@ async def confirm_restart(call: CallbackQuery, state: FSMContext, product_positi
 
 @client_router.callback_query(CreateOrder.confirm, F.data == "confirm:ok")
 async def confirm_ok(
-        call: CallbackQuery,
-        state: FSMContext,
-        # Добавляем правильные type hint'ы для всех менеджеров
-        buyer_order_manager: BuyerOrderManager,
-        product_position_manager: ProductPositionManager,
-        buyer_info_manager: BuyerInfoManager  # <-- Добавлен недостающий аргумент
+    call: CallbackQuery,
+    state: FSMContext,
+    buyer_order_manager: BuyerOrderManager,
+    product_position_manager: ProductPositionManager,
+    buyer_info_manager: BuyerInfoManager
 ):
     await call.answer()
     data = await state.get_data()
@@ -634,12 +633,11 @@ async def confirm_ok(
     used_bonus: int = data.get("used_bonus", 0)
     total: int = data.get("total", 0)
 
-    # 1. Создаем заказ в базе
+    # 1. Создаем заказ
     order_id, err = await buyer_order_manager.create_order(
         tg_user_id=call.from_user.id,
         items=cart, delivery_way=delivery_way, address=address, used_bonus=used_bonus
     )
-
     if not order_id:
         await call.message.answer(err or "Не удалось создать заказ. Попробуйте снова.")
         return
@@ -649,15 +647,33 @@ async def confirm_ok(
 
     # 3. Проверяем сумму и решаем, что делать
     if amount_to_pay >= MIN_PAYMENT_AMOUNT:
-        # --- СЛУЧАЙ 1: Сумма достаточна для онлайн-оплаты ---
         try:
+
+            # Получаем детальную информацию о товарах в корзине
+            products_in_cart = await product_position_manager.get_order_position_by_ids(list(cart.keys()))
+            products_map = {p["id"]: p for p in products_in_cart}
+
+            description_lines = []
+            for product_id, quantity in cart.items():
+                product_title = products_map.get(product_id, {}).get("title", "Неизвестный товар")
+                description_lines.append(f"• {product_title} x {quantity}\n")
+
+            # Собираем описание и проверяем его длину
+            description_text = "\n".join(description_lines)
+            if len(description_text) > 255:
+                # Если описание слишком длинное, используем запасной вариант
+                description_text = f"Оплата {len(cart)} позиций из вашего заказа."
+                # Убедимся, что даже запасной вариант не слишком длинный
+                if len(description_text) > 255:
+                    description_text = "Оплата товаров из корзины"
+
             log.info(f"Выставление счета на сумму {amount_to_pay} для заказа #{order_id}")
             await call.message.delete()
 
             await call.bot.send_invoice(
                 chat_id=call.from_user.id,
                 title=f"Оплата заказа №{order_id}",
-                description="Оплата товаров из корзины",
+                description=description_text,
                 payload=f"order_payment:{order_id}",
                 provider_token=PAYMENT_TOKEN,
                 currency="RUB",
