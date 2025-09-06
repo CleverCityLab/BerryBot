@@ -1,6 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from database.models.buyer_orders import BuyerOrders
+
 
 def get_main_inline_keyboard(is_admin: bool):
     buttons = [
@@ -40,18 +42,25 @@ def get_orders_list_kb(orders: list, finished: bool):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def get_order_detail_kb(order):
-    finished = order.status in ("finished", "cancelled")
-    suffix = "fin" if finished else "act"
+def get_order_detail_kb(order: BuyerOrders) -> InlineKeyboardMarkup:  # Убедитесь, что принимаете объект
+    builder = InlineKeyboardBuilder()
 
-    rows: list[list[InlineKeyboardButton]] = []
-    if not finished:
-        rows.append([InlineKeyboardButton(
-            text="❌ Отмена заказа", callback_data=f"order-cancel:{order.id}:{suffix}"
-        )])
+    # Показываем кнопку, только если это активный заказ с доставкой и уже есть заявка в Яндексе
+    if order.delivery_way.value == 'delivery' and order.yandex_claim_id and order.status.value not in (
+    'finished', 'cancelled'):
+        builder.button(
+            text="🔄 Обновить статус доставки",
+            callback_data=f"delivery:refresh:{order.id}"
+        )
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back-to-list:{suffix}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    if order.status.value not in ('finished', 'cancelled'):
+        builder.button(text="❌ Отмена заказа", callback_data=f"order-cancel:{order.id}:act")
+
+    builder.button(text="⬅️ Назад к списку",
+                   callback_data=f"back-to-list:{'fin' if order.status.value in ('finished', 'cancelled') else 'act'}")
+
+    builder.adjust(1)  # Каждая кнопка на новой строке
+    return builder.as_markup()
 
 
 def get_cancel_confirm_kb(order_id: int, suffix: str):

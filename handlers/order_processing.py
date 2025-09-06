@@ -1,6 +1,7 @@
 # handlers/order_processing.py
-
+import asyncio
 from contextlib import suppress
+from datetime import datetime
 from typing import Union
 
 from aiogram import Router, F, Bot
@@ -127,18 +128,41 @@ async def create_yandex_delivery_claim(
         await bot.send_message(user_id, "❗️Произошла ошибка: не найдены товары в вашем заказе.")
         return
 
+    coords = await geocode_address(order.delivery_address)
+    if not coords:
+        error_msg = f"Не удалось геокодировать адрес '{order.delivery_address}' для заказа #{order_id} при создании заявки."
+        log.error(error_msg)
+        await notify_admins(bot, error_msg)
+        await bot.send_message(user_id,
+                               "❗️Произошла ошибка при определении координат вашего адреса. Мы уже занимаемся этим.")
+        return
+    client_lon, client_lat = coords
+
+    client_info = {
+        "name": buyer_profile['name_surname'],
+        "phone": buyer_profile['tel_num'],
+        "address": order.delivery_address,  # Основной адрес из заказа
+        "porch": buyer_profile['porch'],  # Детали из профиля
+        "floor": buyer_profile['floor'],
+        "apartment": buyer_profile['apartment'],
+        "latitude": client_lat,  # Свежие координаты
+        "longitude": client_lon
+    }
+
     # 2. Собираем items строго по API
     items_for_api = [
         {
-            "quantity": int(item.qty),
+            "cost_currency": "RUB",
+            "cost_value": str(item.price),
+            "quantity": item.qty,
+            "title": item.title,
             "pickup_point": 1,
             "dropoff_point": 2,
-            "title": item.title,
             "weight": float(item.weight_kg),
             "size": {
                 "length": float(item.length_m),
                 "width": float(item.width_m),
-                "height": float(item.height_m),
+                "height": float(item.height_m)
             }
         }
         for item in order_items_from_db
@@ -147,14 +171,14 @@ async def create_yandex_delivery_claim(
     # 3. Вызываем API
     claim_id = await yandex_delivery_client.create_claim(
         items=items_for_api,
-        client_address=order.delivery_address,  # Передаем адрес как строку
-        warehouse_info=warehouse,  # Передаем словарь склада
-        buyer_info=dict(buyer_profile)  # Передаем словарь профиля
+        client_info=client_info,  # <-- Теперь это client_info
+        warehouse_info=warehouse,
+        order_id=order_id  # <-- Теперь это order_id
     )
 
     if claim_id:
-        is_accepted = await yandex_delivery_client.accept_claim(claim_id)
-        if is_accepted:
+        accepted_info = await yandex_delivery_client.accept_claim(claim_id)
+        if accepted_info:  # <-- Проверяем, что ответ не None
             await buyer_order_manager.save_claim_id(order_id, claim_id)
             await bot.send_message(user_id, "Заявка на доставку создана! Идет поиск курьера.")
         else:
@@ -663,3 +687,96 @@ async def cancel_payment_invoice(call: CallbackQuery, state: FSMContext, buyer_o
         parse_mode="Markdown",
         reply_markup=get_main_inline_keyboard(is_admin)
     )
+
+
+async def _format_delivery_status(
+        claim_id: str,
+        yandex_delivery_client: YandexDeliveryClient
+) -> str:
+    """
+    Получает всю информацию о доставке из Яндекса и форматирует ее в текст.
+    """
+    # Запрашиваем всю информацию параллельно для скорости
+    claim_info, eta_info, links_info, phone_info = await asyncio.gather(
+        yandex_delivery_client.get_claim_info(claim_id),
+        yandex_delivery_client.get_points_eta(claim_id),
+        yandex_delivery_client.get_tracking_links(claim_id),
+        yandex_delivery_client.get_courier_phone(claim_id)
+    )
+
+    if not claim_info:
+        return "\n\n*Статус доставки:*\nНе удалось получить информацию о заявке."
+
+    status = claim_info.get("status")
+    if status in ("performer_lookup", "accepted", "ready_for_approval"):
+        return "\n\n*Статус доставки:*\n⏳ Идет поиск курьера..."
+
+    # --- Если курьер найден, собираем полную информацию ---
+    lines = ["\n\n*Статус доставки:*"]
+
+    # 1. Телефон курьера
+    if phone_info and phone_info.get("phone"):
+        phone = phone_info['phone']
+        ext = f" (доб. {phone_info['ext']})" if phone_info.get('ext') else ""
+        lines.append(f"📞 Телефон курьера: `{phone}{ext}`")
+
+    # 2. Ссылка на отслеживание
+    if links_info:
+        for point in links_info.get("route_points", []):
+            if point.get("type") == "destination" and point.get("sharing_link"):
+                lines.append(f"🗺️ [Отследить на карте]({point['sharing_link']})")
+                break
+
+    # 3. Время прибытия (ETA)
+    if eta_info:
+        for point in eta_info.get("route_points", []):
+            eta_time_str = point.get("visited_at", {}).get("expected")
+            if not eta_time_str: continue
+
+            eta_time = datetime.fromisoformat(eta_time_str).strftime("%H:%M")
+            if point.get("type") == "source":
+                lines.append(f" sklad: Прибытие на склад: ~ *{eta_time}*")
+            elif point.get("type") == "destination":
+                lines.append(f"🏠 Прибытие к вам: ~ *{eta_time}*")
+
+    return "\n".join(lines)
+
+
+@client_router.callback_query(F.data.startswith("delivery:refresh:"))
+async def refresh_delivery_status(
+        call: CallbackQuery,
+        buyer_order_manager: BuyerOrderManager,
+        yandex_delivery_client: YandexDeliveryClient
+):
+    """
+    Обновляет информацию о доставке в сообщении о заказе.
+    Работает и для клиента, и для админа.
+    """
+    await call.answer("Обновляю информацию...")
+    order_id = int(call.data.split(":")[2])
+
+    # Получаем заказ из БД, чтобы найти yandex_claim_id
+    order = await buyer_order_manager.get_order_by_id(order_id)
+    if not (order and order.yandex_claim_id):
+        await call.answer("Информация о заявке в Яндекс.Доставке не найдена.", show_alert=True)
+        return
+
+    # Получаем основной текст сообщения (без старого статуса доставки)
+    base_text = call.message.text.split("\n\n*Статус доставки:*")[0]
+
+    # Получаем новый, актуальный статус
+    delivery_status_text = await _format_delivery_status(order.yandex_claim_id, yandex_delivery_client)
+
+    # Собираем новое сообщение и обновляем его
+    new_text = base_text + delivery_status_text
+
+    try:
+        await call.message.edit_text(
+            new_text,
+            parse_mode="Markdown",
+            reply_markup=call.message.reply_markup,  # Используем ту же клавиатуру, что и была
+            disable_web_page_preview=True
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e):
+            log.error(f"Ошибка при обновлении статуса доставки: {e}")

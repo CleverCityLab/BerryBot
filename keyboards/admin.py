@@ -79,6 +79,12 @@ def admin_order_detail_kb(order: dict, *, suffix: str) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="❌ Отмена заказа",
                                           callback_data=f"adm-order:cancel:{order['id']}:{suffix}")])
 
+    if order["delivery_way"] == "delivery" and order.get("yandex_claim_id"):
+        rows.append([InlineKeyboardButton(
+            text="🔄 Обновить статус доставки",
+            callback_data=f"delivery:refresh:{order['id']}"  # Используем тот же callback
+        )])
+
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm-orders:back-list:{suffix}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
