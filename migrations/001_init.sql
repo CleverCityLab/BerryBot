@@ -24,13 +24,13 @@ CREATE TYPE finish_status AS ENUM (
     'delivered',
     'in_process',
     'canceled'
-);
+    );
 
 CREATE TYPE payment_status AS ENUM (
     'pending',
     'succeeded',
     'canceled'
-);
+    );
 
 
 --

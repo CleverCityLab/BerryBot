@@ -872,8 +872,8 @@ def format_warehouse_info(warehouse_data: dict) -> str:
         f"Адрес: {address_line}\n"
         f"Контактное лицо: {warehouse_data.get('contact_name', 'не указано')}\n"
         f"Телефон: {warehouse_data.get('contact_phone', 'не указан')}"
-        f"Координаты (шир, долг): <code>{warehouse_data.get('latitude')},"
-        f" {warehouse_data.get('longitude')}"
+        f"Координаты (шир, долг): `{warehouse_data.get('latitude')},"
+        f" {warehouse_data.get('longitude')}`"
     )
 
 
@@ -896,7 +896,7 @@ async def admin_delivery_settings(call: CallbackQuery, warehouse_manager: Wareho
         text = format_warehouse_info(None)  # Функция вернет текст ошибки
         kb = admin_create_warehouse_kb()
 
-    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 # --- Хендлер для кнопок "Изменить..." ---
@@ -965,7 +965,7 @@ async def process_edit_warehouse_value(msg: Message, state: FSMContext, warehous
     default_warehouse = await warehouse_manager.get_default_warehouse()
     text = format_warehouse_info(default_warehouse)
     kb = admin_warehouse_detail_kb(default_warehouse['id']) if default_warehouse else None
-    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+    await msg.answer(text, parse_mode="Markdown", reply_markup=kb)
 
 
 @admin_router.message(WarehouseEdit.waiting_for_location, F.location)
@@ -990,7 +990,7 @@ async def process_edit_warehouse_location(msg: Message, state: FSMContext, wareh
     default_warehouse = await warehouse_manager.get_default_warehouse()
     text = format_warehouse_info(default_warehouse)
     kb = admin_warehouse_detail_kb(default_warehouse['id']) if default_warehouse else None
-    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+    await msg.answer(text, parse_mode="Markdown", reply_markup=kb)
 
 
 @admin_router.callback_query(F.data.startswith("adm-pos:") & ~F.data.in_({"adm-pos:add", "adm-pos:back-list"}))
