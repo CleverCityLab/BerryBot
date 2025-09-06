@@ -47,11 +47,10 @@ def get_order_detail_kb(order: BuyerOrders) -> InlineKeyboardMarkup:  # Убед
 
     # Показываем кнопку, только если это активный заказ с доставкой и уже есть заявка в Яндексе
     if order.delivery_way.value == 'delivery' and order.yandex_claim_id and order.status.value not in (
-    'finished', 'cancelled'):
+            'finished', 'cancelled'):
         builder.button(
             text="🔄 Обновить статус доставки",
-            callback_data=f"delivery:refresh:{order.id}"
-        )
+            callback_data=f"delivery:refresh:{order.id}")
 
     if order.status.value not in ('finished', 'cancelled'):
         builder.button(text="❌ Отмена заказа", callback_data=f"order-cancel:{order.id}:act")

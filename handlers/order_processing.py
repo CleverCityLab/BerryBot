@@ -118,8 +118,10 @@ async def create_yandex_delivery_claim(
     buyer_profile = await buyer_info_manager.get_profile_by_tg(user_id)
 
     if not (order and warehouse and buyer_profile):
-        await notify_admins(bot, f"Не удалось собрать данные (заказ/склад/профиль) для заказа #{order_id}")
-        await bot.send_message(user_id, "❗️Произошла ошибка при создании доставки. Мы уже занимаемся этим.")
+        await notify_admins(bot, f"Не удалось собрать "
+                                 f"данные (заказ/склад/профиль) для заказа #{order_id}")
+        await bot.send_message(user_id, "❗️Произошла ошибка при создании доставки. "
+                                        "Мы уже занимаемся этим.")
         return
 
     order_items_from_db = await buyer_order_manager.list_items_by_order_id(order_id)
@@ -130,7 +132,8 @@ async def create_yandex_delivery_claim(
 
     coords = await geocode_address(order.delivery_address)
     if not coords:
-        error_msg = f"Не удалось геокодировать адрес '{order.delivery_address}' для заказа #{order_id} при создании заявки."
+        error_msg = (f"Не удалось геокодировать адрес '{order.delivery_address}' "
+                     f"для заказа #{order_id} при создании заявки.")
         log.error(error_msg)
         await notify_admins(bot, error_msg)
         await bot.send_message(user_id,
@@ -731,7 +734,8 @@ async def _format_delivery_status(
     if eta_info:
         for point in eta_info.get("route_points", []):
             eta_time_str = point.get("visited_at", {}).get("expected")
-            if not eta_time_str: continue
+            if not eta_time_str:
+                continue
 
             eta_time = datetime.fromisoformat(eta_time_str).strftime("%H:%M")
             if point.get("type") == "source":
