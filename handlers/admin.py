@@ -1,11 +1,15 @@
 import asyncio
+from contextlib import suppress
+from typing import Union
 
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery
 
+from database.managers.warehouse_manager import WarehouseManager
+from database.managers.product_position_manager import ProductPositionManager
 from keyboards.admin import (admin_positions_list,
                              admin_edit_back,
                              admin_pos_detail,
@@ -13,9 +17,12 @@ from keyboards.admin import (admin_positions_list,
                              get_admin_orders_keyboard,
                              get_admin_orders_list_kb,
                              admin_order_detail_kb,
-                             admin_cancel_confirm_kb, notify_cancel_kb, notify_confirm_kb
+                             admin_cancel_confirm_kb, notify_cancel_kb,
+                             notify_confirm_kb, admin_warehouse_detail_kb,
+                             admin_create_warehouse_kb
                              )
-from keyboards.client import get_main_inline_keyboard
+from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
+from api.yandex_delivery import geocode_address
 
 from utils.decorators import admin_only
 from utils.logger import get_logger
@@ -67,9 +74,16 @@ class PosEdit(StatesGroup):
     add_title = State()
     add_price = State()
     add_qty = State()
+    add_weight = State()  # Вес
+    add_length = State()  # Длина
+    add_width = State()  # Ширина
+    add_height = State()  # Высота
+
     edit_title = State()
     edit_price = State()
     edit_qty = State()
+    edit_weight = State()
+    edit_dims = State()
 
 
 class AdminNotify(StatesGroup):
@@ -77,8 +91,33 @@ class AdminNotify(StatesGroup):
     confirm = State()
 
 
-def register_admin(dp):
-    dp.include_router(admin_router)
+class WarehouseEdit(StatesGroup):
+    waiting_for_value = State()
+    waiting_for_location = State()
+
+
+class WarehouseCreate(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_address = State()
+    confirm_geoposition = State()
+    waiting_for_porch = State()
+    waiting_for_floor = State()
+    waiting_for_apartment = State()
+    waiting_for_contact_name = State()
+    waiting_for_contact_phone = State()
+
+
+def format_product_info(pos: dict) -> str:
+    """Форматирует детальную информацию о товаре."""
+    if not pos:
+        return "Товар не найден."
+    return (
+        f"*Наименование:* {pos['title']}\n"
+        f"*Цена:* `{pos['price']}` руб.\n"
+        f"*Количество:* `{pos['quantity']}` шт.\n"
+        f"*Вес:* `{pos.get('weight_kg', 'не указ.')}` кг.\n"
+        f"*Габариты (ДxШxВ):* `{pos.get('length_m', '?')} x {pos.get('width_m', '?')} x {pos.get('height_m', '?')}` м."
+    )
 
 
 @admin_router.callback_query(F.data == "back-admin-main")
@@ -161,22 +200,120 @@ async def adm_pos_add_price(msg: Message, state: FSMContext):
 
 @admin_router.message(PosEdit.add_qty)
 @admin_only
-async def adm_pos_add_qty(msg: Message, state: FSMContext, product_position_manager):
+async def adm_pos_add_qty(msg: Message, state: FSMContext):
     try:
         qty = int(msg.text)
         assert qty >= 0
     except Exception:
         await msg.answer("Количество должно быть целым числом ≥ 0.")
         return
+
+    await state.update_data(qty=qty)
+    # Переходим к следующему шагу - вводу веса
+    await state.set_state(PosEdit.add_weight)
+    await msg.answer("Введите *вес* одной единицы товара в килограммах (например: 0.5):", parse_mode="Markdown")
+
+
+async def _parse_float(text: str) -> Union[float, None]:
+    """Вспомогательная функция для парсинга положительных float чисел."""
+    try:
+        value = float(text.replace(',', '.'))  # Заменяем запятую на точку для удобства
+        if value < 0: return None
+        return value
+    except (ValueError, TypeError):
+        return None
+
+
+@admin_router.message(PosEdit.add_weight)
+@admin_only
+async def adm_pos_add_weight(msg: Message, state: FSMContext):
+    weight = await _parse_float(msg.text)
+    if weight is None:
+        await msg.answer("Вес должен быть положительным числом (например: 0.5 или 1.2).")
+        return
+    await state.update_data(weight_kg=weight)
+    await state.set_state(PosEdit.add_length)
+    await msg.answer("Введите *длину* в метрах (например: 0.2):", parse_mode="Markdown")
+
+
+@admin_router.message(PosEdit.add_length)
+@admin_only
+async def adm_pos_add_length(msg: Message, state: FSMContext):
+    length = await _parse_float(msg.text)
+    if length is None:
+        await msg.answer("Длина должна быть положительным числом (например: 0.2 или 1.0).")
+        return
+    await state.update_data(length_m=length)
+    await state.set_state(PosEdit.add_width)
+    await msg.answer("Введите *ширину* в метрах (например: 0.15):", parse_mode="Markdown")
+
+
+@admin_router.message(PosEdit.add_width)
+@admin_only
+async def adm_pos_add_width(msg: Message, state: FSMContext):
+    width = await _parse_float(msg.text)
+    if width is None:
+        await msg.answer("Ширина должна быть положительным числом (например: 0.15).")
+        return
+    await state.update_data(width_m=width)
+    await state.set_state(PosEdit.add_height)
+    await msg.answer("Введите *высоту* в метрах (например: 0.1):", parse_mode="Markdown")
+
+
+@admin_router.message(PosEdit.add_height)
+@admin_only
+async def adm_pos_add_height_and_create(msg: Message, state: FSMContext, product_position_manager):
+    height = await _parse_float(msg.text)
+    if height is None:
+        await msg.answer("Высота должна быть положительным числом (например: 0.1).")
+        return
+
     data = await state.get_data()
-    pid = await product_position_manager.create_position(data["title"], data["price"], qty)
+
+    # Вызываем обновленный метод создания позиции
+    pid = await product_position_manager.create_position(
+        title=data["title"],
+        price=data["price"],
+        quantity=data["qty"],
+        weight_kg=data["weight_kg"],
+        length_m=data["length_m"],
+        width_m=data["width_m"],
+        height_m=height  # Последний параметр берем напрямую
+    )
     await state.clear()
+
     pos = await product_position_manager.get_order_position_by_id(pid)
-    text = (f"*Наименование:* {pos['title']}\n"
-            f"*Цена:* `{pos['price']}` руб.\n"
-            f"*Оставшееся количество:* `{pos['quantity']}` шт")
+
+    # Обновляем текст вывода, чтобы показать новые данные
+    text = format_product_info(pos)
+
     await msg.answer("Позиция *успешно добавлена* ✅", parse_mode="Markdown")
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+
+
+@admin_router.callback_query(F.data.startswith("adm-pos:edit-title:"))
+@admin_only
+async def adm_pos_edit_title_start(call: CallbackQuery, state: FSMContext):
+    """
+    Реагирует на кнопку 'Изменить название' и запускает FSM.
+    """
+    try:
+        pid = int(call.data.split(":")[2])
+    except (ValueError, IndexError):
+        await call.answer("Ошибка в данных кнопки.", show_alert=True)
+        return
+
+    await state.update_data(pid=pid)
+    await state.set_state(PosEdit.edit_title)
+    try:
+        await call.message.edit_text(
+            "Введите *новое название* позиции:",
+            parse_mode="Markdown",
+            reply_markup=admin_edit_back(pid)
+        )
+        await call.answer()
+    except TelegramBadRequest as e:
+        await handle_telegram_error(e, call=call)
 
 
 @admin_router.message(PosEdit.edit_title)
@@ -190,9 +327,9 @@ async def adm_pos_edit_title_set(msg: Message, state: FSMContext, product_positi
     await product_position_manager.update_title(pid, name)
     await state.clear()
     pos = await product_position_manager.get_order_position_by_id(pid)
-    text = (f"*Наименование:* {pos['title']}\n"
-            f"*Цена:* `{pos['price']}` руб.\n"
-            f"*Оставшееся количество:* `{pos['quantity']}` шт")
+
+    # Обновляем текст вывода, чтобы показать новые данные
+    text = format_product_info(pos)
     await msg.answer("Название *успешно изменено* ✅", parse_mode="Markdown")
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
@@ -226,9 +363,9 @@ async def adm_pos_edit_price_set(msg: Message, state: FSMContext, product_positi
     await product_position_manager.update_price(pid, price)
     await state.clear()
     pos = await product_position_manager.get_order_position_by_id(pid)
-    text = (f"*Наименование:* {pos['title']}\n"
-            f"*Цена:* `{pos['price']}` руб.\n"
-            f"*Оставшееся количество:* `{pos['quantity']}` шт")
+
+    # Обновляем текст вывода, чтобы показать новые данные
+    text = format_product_info(pos)
     await msg.answer("Цена *успешно изменена* ✅", parse_mode="Markdown")
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
@@ -249,6 +386,87 @@ async def adm_pos_edit_qty_start(call: CallbackQuery, state: FSMContext):
         return
 
 
+@admin_router.callback_query(F.data.startswith("adm-pos:edit-weight:"))
+@admin_only
+async def adm_pos_edit_weight_start(call: CallbackQuery, state: FSMContext):
+    pid = int(call.data.split(":")[2])
+    await state.update_data(pid=pid)
+    await state.set_state(PosEdit.edit_weight)
+    await call.message.edit_text(
+        "Введите *новый вес* товара в килограммах (например: 0.5):",
+        parse_mode="Markdown",
+        reply_markup=admin_edit_back(pid)
+    )
+    await call.answer()
+
+
+@admin_router.message(PosEdit.edit_weight)
+@admin_only
+async def adm_pos_edit_weight_set(msg: Message, state: FSMContext, product_position_manager: ProductPositionManager):
+    weight = await _parse_float(msg.text)  # Используем нашу вспомогательную функцию
+    if weight is None:
+        await msg.answer("Вес должен быть положительным числом.")
+        return
+
+    data = await state.get_data()
+    pid = data["pid"]
+    await product_position_manager.update_weight(pid, weight)  # Нужен новый метод в менеджере
+    await state.clear()
+
+    await msg.answer("✅ Вес товара успешно изменен!")
+
+    # Показываем обновленную карточку товара
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    text = format_product_info(pos)  # Выносим форматирование в отдельную функцию
+    await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+
+
+# --- Редактирование Габаритов ---
+
+@admin_router.callback_query(F.data.startswith("adm-pos:edit-dims:"))
+@admin_only
+async def adm_pos_edit_dims_start(call: CallbackQuery, state: FSMContext):
+    pid = int(call.data.split(":")[2])
+    await state.update_data(pid=pid)
+    await state.set_state(PosEdit.edit_dims)
+    await call.message.edit_text(
+        "Введите *новые габариты* (Длина x Ширина x Высота) в метрах, через пробел или 'x'.\n\n"
+        "Пример: `0.2 x 0.15 x 0.1`",
+        parse_mode="Markdown",
+        reply_markup=admin_edit_back(pid)
+    )
+    await call.answer()
+
+
+@admin_router.message(PosEdit.edit_dims)
+@admin_only
+async def adm_pos_edit_dims_set(msg: Message, state: FSMContext, product_position_manager: ProductPositionManager):
+    # Пытаемся распарсить три числа из строки
+    try:
+        # Заменяем 'x', 'х' (русскую) и запятые, чтобы быть гибкими к вводу
+        cleaned_text = msg.text.replace(',', '.').replace('x', ' ').replace('х', ' ')
+        dims = [float(d.strip()) for d in cleaned_text.split()]
+        if len(dims) != 3:
+            raise ValueError
+        length, width, height = dims
+        if not all(d > 0 for d in dims):
+            raise ValueError
+    except (ValueError, TypeError, IndexError):
+        await msg.answer("Неверный формат. Пожалуйста, введите три положительных числа, например: `0.2 0.15 0.1`")
+        return
+
+    data = await state.get_data()
+    pid = data["pid"]
+    await product_position_manager.update_dims(pid, length, width, height)  # Нужен новый метод в менеджере
+    await state.clear()
+
+    await msg.answer("✅ Габариты товара успешно изменены!")
+
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    text = format_product_info(pos)
+    await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+
+
 @admin_router.message(PosEdit.edit_qty)
 @admin_only
 async def adm_pos_edit_qty_set(msg: Message, state: FSMContext, product_position_manager):
@@ -262,9 +480,9 @@ async def adm_pos_edit_qty_set(msg: Message, state: FSMContext, product_position
     await product_position_manager.update_quantity(pid, qty)
     await state.clear()
     pos = await product_position_manager.get_order_position_by_id(pid)
-    text = (f"*Наименование:* {pos['title']}\n"
-            f"*Цена:* `{pos['price']}` руб.\n"
-            f"*Оставшееся количество:* `{pos['quantity']}` шт")
+
+    # Обновляем текст вывода, чтобы показать новые данные
+    text = format_product_info(pos)
     await msg.answer("Доступное количество *успешно изменено* ✅", parse_mode="Markdown")
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
@@ -291,34 +509,13 @@ async def adm_pos_delete_yes(call: CallbackQuery, product_position_manager):
         await call.answer(err or "Нельзя удалить позицию, есть заказы, связанные с ней", show_alert=True)
         pos = await product_position_manager.get_order_position_by_id(pid)
         if pos:
-            text = (f"*Наименование:* {pos['title']}\n"
-                    f"*Цена:* `{pos['price']}` руб.\n"
-                    f"*Оставшееся количество:* `{pos['quantity']}` шт")
+            # Обновляем текст вывода, чтобы показать новые данные
+            text = format_product_info(pos)
             await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
         return
     items = await product_position_manager.list_all_order_positions()
     try:
         await call.message.edit_text("Текущие позиции:", reply_markup=admin_positions_list(items))
-        await call.answer()
-    except TelegramBadRequest as e:
-        log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
-        await handle_telegram_error(e, call=call)
-        return
-
-
-@admin_router.callback_query(F.data.startswith("adm-pos:") & ~F.data.in_({"adm-pos:add", "adm-pos:back-list"}))
-@admin_only
-async def adm_pos_detail(call: CallbackQuery, product_position_manager):
-    pid = int(call.data.split(":")[1])
-    pos = await product_position_manager.get_order_position_by_id(pid)
-    if not pos:
-        await call.answer("Позиция не найдена", show_alert=True)
-        return
-    text = (f"*Наименование:* {pos['title']}\n"
-            f"*Цена:* `{pos['price']}` руб.\n"
-            f"*Оставшееся количество:* `{pos['quantity']}` шт")
-    try:
-        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
         await call.answer()
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
@@ -648,3 +845,299 @@ async def notify_cancel(call: CallbackQuery, state: FSMContext):
     except TelegramBadRequest as e:
         log.error(e)
         await handle_telegram_error(e, call=call)
+
+
+def format_warehouse_info(warehouse_data: dict) -> str:
+    """Вспомогательная функция для красивого вывода информации о складе."""
+    if not warehouse_data:
+        return (
+            "❗️ Склад по умолчанию не найден в базе данных.\n\n"
+            "Доставка не будет работать, пока вы не создадите запись о складе ")
+
+    address_line = warehouse_data.get('address', 'не указан')
+    details = []
+    if warehouse_data.get('porch'): details.append(f"подъезд {warehouse_data['porch']}")
+    if warehouse_data.get('floor'): details.append(f"этаж {warehouse_data['floor']}")
+    if warehouse_data.get('apartment'): details.append(f"кв/офис {warehouse_data['apartment']}")
+    if details:
+        address_line += f" ({', '.join(details)})"
+
+    return (
+        "<b>🚚 Информация о складе для отправки заказов:</b>\n\n"
+        f"<b>Название:</b> {warehouse_data.get('name', 'не указано')}\n"
+        f"<b>Адрес:</b> {address_line}\n"
+        f"<b>Контактное лицо:</b> {warehouse_data.get('contact_name', 'не указано')}\n"
+        f"<b>Телефон:</b> <code>{warehouse_data.get('contact_phone', 'не указан')}</code>"
+        f"<b>Координаты (шир, долг):</b> <code>{warehouse_data.get('latitude')}, {warehouse_data.get('longitude')}</code>"
+    )
+
+
+# --- Хендлер для кнопки "Настройки доставки" ---
+@admin_router.callback_query(F.data == "delivery-settings")
+@admin_only
+async def admin_delivery_settings(call: CallbackQuery, warehouse_manager: WarehouseManager):
+    """
+    Показывает информацию о складе или предлагает его создать.
+    """
+    await call.answer()
+    default_warehouse = await warehouse_manager.get_default_warehouse()
+
+    if default_warehouse:
+        # Склад найден, показываем детали и кнопки редактирования (старая логика)
+        text = format_warehouse_info(default_warehouse)
+        kb = admin_warehouse_detail_kb(default_warehouse['id'])
+    else:
+        # Склад НЕ найден, показываем ошибку и кнопку "Создать"
+        text = format_warehouse_info(None)  # Функция вернет текст ошибки
+        kb = admin_create_warehouse_kb()
+
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+# --- Хендлер для кнопок "Изменить..." ---
+@admin_router.callback_query(F.data.startswith("wh:edit:"))
+@admin_only
+async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
+    """
+    Запускает FSM для редактирования одного поля склада.
+    """
+    await call.answer()
+    try:
+        _, _, field_to_edit, warehouse_id_str = call.data.split(":")
+        warehouse_id = int(warehouse_id_str)
+    except ValueError:
+        await call.message.answer("Ошибка: некорректные данные в кнопке.")
+        return
+
+    if field_to_edit == "location":
+        await state.set_state(WarehouseEdit.waiting_for_location)
+        await state.update_data(warehouse_id=warehouse_id)
+        await call.message.edit_text(
+            "Отправьте мне геолокацию склада (через скрепку 📎 -> Геопозиция)."
+        )
+        return
+
+    # --- ИЗМЕНЕНИЕ ЗДЕСЬ: ДОБАВЛЯЕМ НОВЫЕ ПОЛЯ В field_map ---
+    field_map = {
+        "name": "название склада",
+        "address": "основной адрес (улица, дом)",
+        "porch": "подъезд",
+        "floor": "этаж",
+        "apartment": "номер квартиры/офиса",
+        "contact_name": "имя контактного лица",
+        "contact_phone": "контактный телефон"
+    }
+
+    prompt_text = field_map.get(field_to_edit)
+    if not prompt_text:
+        await call.message.answer("Ошибка: попытка редактировать неизвестное поле.")
+        return
+
+    await state.set_state(WarehouseEdit.waiting_for_value)
+    await state.update_data(field_to_edit=field_to_edit, warehouse_id=warehouse_id)
+
+    # Используем parse_mode="HTML" для жирного шрифта
+    await call.message.edit_text(f"Введите новое значение для поля '<b>{prompt_text}</b>':", parse_mode="HTML")
+
+
+# --- Хендлер, который ловит ответ от админа с новым значением ---
+@admin_router.message(WarehouseEdit.waiting_for_value)
+@admin_only
+async def process_edit_warehouse_value(msg: Message, state: FSMContext, warehouse_manager: WarehouseManager):
+    """
+    Получает новое значение, обновляет его в БД и показывает результат.
+    """
+    data = await state.get_data()
+    field = data.get("field_to_edit")
+    warehouse_id = data.get("warehouse_id")
+    new_value = msg.text.strip()
+
+    await warehouse_manager.update_field(warehouse_id, field, new_value)
+
+    await state.clear()
+    await msg.answer("✅ Данные склада успешно обновлены!")
+
+    default_warehouse = await warehouse_manager.get_default_warehouse()
+    text = format_warehouse_info(default_warehouse)
+    kb = admin_warehouse_detail_kb(default_warehouse['id']) if default_warehouse else None
+    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@admin_router.message(WarehouseEdit.waiting_for_location, F.location)
+@admin_only
+async def process_edit_warehouse_location(msg: Message, state: FSMContext, warehouse_manager: WarehouseManager):
+    """
+    Ловит геолокацию, обновляет широту и долготу в БД.
+    """
+    data = await state.get_data()
+    warehouse_id = data.get("warehouse_id")
+
+    latitude = msg.location.latitude
+    longitude = msg.location.longitude
+
+    # Вызываем новый метод в менеджере для обновления координат
+    await warehouse_manager.update_location(warehouse_id, latitude, longitude)
+
+    await state.clear()
+    await msg.answer("✅ Координаты склада успешно обновлены!")
+
+    # Показываем админу обновленную информацию
+    default_warehouse = await warehouse_manager.get_default_warehouse()
+    text = format_warehouse_info(default_warehouse)
+    kb = admin_warehouse_detail_kb(default_warehouse['id']) if default_warehouse else None
+    await msg.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@admin_router.callback_query(F.data.startswith("adm-pos:") & ~F.data.in_({"adm-pos:add", "adm-pos:back-list"}))
+@admin_only
+async def adm_pos_detail(call: CallbackQuery, product_position_manager):
+    pid = int(call.data.split(":")[1])
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    if not pos:
+        await call.answer("Позиция не найдена", show_alert=True)
+        return
+
+    # Формируем новый, расширенный текст
+    text = format_product_info(pos)
+    try:
+        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+        await call.answer()
+    except TelegramBadRequest as e:
+        await handle_telegram_error(e, call=call)
+        return
+
+
+# =======================================================================================
+# ======================== НОВЫЙ БЛОК СОЗДАНИЯ СКЛАДА ===================================
+# =======================================================================================
+
+@admin_router.callback_query(F.data == "wh:create")
+@admin_only
+async def start_create_warehouse(call: CallbackQuery, state: FSMContext):
+    """Начинает FSM для создания склада."""
+    await state.set_state(WarehouseCreate.waiting_for_name)
+    await call.message.edit_text(
+        "**Шаг 1/7:** Введите **название** склада (например, 'Основной склад'):", parse_mode="Markdown")
+    await call.answer()
+
+
+@admin_router.message(WarehouseCreate.waiting_for_name)
+@admin_only
+async def process_create_warehouse_name(msg: Message, state: FSMContext):
+    await state.update_data(name=msg.text.strip())
+    await state.set_state(WarehouseCreate.waiting_for_address)
+    await msg.answer(
+        "**Шаг 2/7:** Теперь введите **адрес** склада (город, улица, дом) или сразу отправьте его **геолокацию**.",
+        parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_address, F.text)
+@admin_only
+async def process_create_warehouse_text_address(msg: Message, state: FSMContext, bot: Bot):
+    """Ловит текстовый адрес, геокодирует и отправляет карту для подтверждения."""
+    address_text = msg.text.strip()
+    await msg.answer("⏳ Ищу адрес на карте...")
+
+    coords = await geocode_address(address_text)
+    if not coords:
+        await msg.answer("Не удалось найти такой адрес. Попробуйте ввести его подробнее или отправьте геоточку.")
+        return
+
+    lon, lat = coords
+    await state.update_data(address=address_text, latitude=lat, longitude=lon)
+    await state.set_state(WarehouseCreate.confirm_geoposition)
+
+    await bot.send_location(chat_id=msg.chat.id, latitude=lat, longitude=lon)
+    await msg.answer("Я нашел склад здесь. Местоположение верное?", reply_markup=confirm_geoposition_kb())
+
+
+@admin_router.message(WarehouseCreate.waiting_for_address, F.location)
+@admin_router.message(WarehouseCreate.confirm_geoposition, F.location)
+@admin_only
+async def process_create_warehouse_manual_location(msg: Message, state: FSMContext):
+    """Ловит геолокацию, отправленную вручную."""
+    await state.update_data(
+        latitude=msg.location.latitude,
+        longitude=msg.location.longitude,
+        address=f"Геометка ({msg.location.latitude:.5f}, {msg.location.longitude:.5f})"
+    )
+    await state.set_state(WarehouseCreate.waiting_for_porch)
+    await state.set_state(WarehouseCreate.waiting_for_porch)
+    await msg.answer(
+        "**Шаг 3/7:** Точка принята! Теперь введите **подъезд** (или отправьте прочерк `-`, если его нет):",
+        parse_mode="Markdown")
+
+
+@admin_router.callback_query(WarehouseCreate.confirm_geoposition, F.data.startswith("geo:"))
+@admin_only
+async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, state: FSMContext):
+    """Обрабатывает подтверждение геоточки."""
+    await call.answer()
+    action = call.data.split(":")[1]
+
+    with suppress(TelegramBadRequest):
+        await call.message.delete()
+        await call.bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id - 1)
+
+    if action == "confirm":
+        await state.set_state(WarehouseCreate.waiting_for_porch)
+        await call.message.answer(
+            "**Шаг 3/7:** Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`, если его нет):",
+            parse_mode="Markdown")
+        return
+
+    if action == "manual":
+        await call.message.answer("Хорошо, пожалуйста, отправьте мне геолокацию склада (Скрепка 📎 -> Местоположение).")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_porch)
+@admin_only
+async def process_create_warehouse_porch(msg: Message, state: FSMContext):
+    await state.update_data(porch=msg.text.strip() if msg.text.strip() != '-' else None)
+    await state.set_state(WarehouseCreate.waiting_for_floor)
+    await msg.answer("Шаг 4/7: Принято. Введите **этаж** (или `-`):", parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_floor)
+@admin_only
+async def process_create_warehouse_floor(msg: Message, state: FSMContext):
+    await state.update_data(floor=msg.text.strip() if msg.text.strip() != '-' else None)
+    await state.set_state(WarehouseCreate.waiting_for_apartment)
+    await msg.answer("Шаг 5/7: Принято. Введите **номер квартиры/офиса** (или `-`):", parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_apartment)
+@admin_only
+async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
+    await state.update_data(apartment=msg.text.strip() if msg.text.strip() != '-' else None)
+    await state.set_state(WarehouseCreate.waiting_for_contact_name)
+    await msg.answer("**Шаг 6/7:** Адрес полностью собран! Теперь введите **имя контактного лица**:",
+                     parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_contact_name)
+@admin_only
+async def process_create_warehouse_contact_name(msg: Message, state: FSMContext):
+    await state.update_data(contact_name=msg.text.strip())
+    await state.set_state(WarehouseCreate.waiting_for_contact_phone)
+    await msg.answer("**Шаг 7/7:** И последнее: введите **контактный телефон** склада:", parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_contact_phone)
+@admin_only
+async def process_create_warehouse_contact_phone_and_save(msg: Message, state: FSMContext,
+                                                          warehouse_manager: WarehouseManager):
+    await state.update_data(contact_phone=msg.text.strip())
+    data = await state.get_data()
+    await state.clear()
+
+    # Вызываем обновленный метод, который сохранит все поля
+    new_warehouse_id = await warehouse_manager.create_default_warehouse(data)
+
+    await msg.answer("✅ Склад по умолчанию успешно создан и сохранен!")
+
+    # Показываем результат
+    new_warehouse_data = await warehouse_manager.get_default_warehouse()
+    text = format_warehouse_info(new_warehouse_data)  # <-- Нужно будет обновить и эту функцию
+    kb = admin_warehouse_detail_kb(new_warehouse_id)  # <-- И эту клавиатуру
+    await msg.answer(text, parse_mode="Markdown", reply_markup=kb)

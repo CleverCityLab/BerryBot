@@ -1,4 +1,5 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 def get_main_inline_keyboard(is_admin: bool):
@@ -12,6 +13,7 @@ def get_main_inline_keyboard(is_admin: bool):
             [InlineKeyboardButton(text="Позиции", callback_data="positions")],
             [InlineKeyboardButton(text="Заказы", callback_data="orders")],
             [InlineKeyboardButton(text="Отправить уведомление покупателям", callback_data="send-notification")],
+            [InlineKeyboardButton(text="Настройки доставки", callback_data="delivery-settings")],
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -67,7 +69,7 @@ def get_all_products(products: list[dict], cart: dict[int, int]) -> InlineKeyboa
         pid = p["id"]
         qty = cart.get(pid, 0)
         check = "✅" if qty > 0 else "🟩"
-        title = f"{check} {p['title']} — {p['price']} руб."
+        title = f"{check} {p['title']}, {p['weight_kg']} кг — {p['price']} руб."
 
         toggle_cb = f"cart:toggle:{pid}" if p["quantity"] > 0 else "noop"
         rows.append([InlineKeyboardButton(text=title, callback_data=toggle_cb)])
@@ -100,25 +102,49 @@ def delivery_address_select(saved: str | None) -> InlineKeyboardMarkup:
     if saved:
         rows.append([InlineKeyboardButton(text=f"Использовать адрес: {saved}", callback_data="addr:use_saved")])
     rows.append([InlineKeyboardButton(text="Ввести адрес вручную", callback_data="addr:enter")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="addr:back")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="cart:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm_create_order(bonuses: int, used_bonuses: int) -> InlineKeyboardMarkup:
-    rows = []
-    if bonuses > 0 and used_bonuses == 0:
-        rows.append([
-            InlineKeyboardButton(text=f"Списать бонусы ({bonuses} ₽)", callback_data="bonus:use"),
+def confirm_create_order(bonuses: int, used_bonus: int, total_sum: float) -> InlineKeyboardMarkup:
+    """
+    Создает клавиатуру для финального подтверждения заказа.
+    :param bonuses: Всего доступно бонусов у пользователя.
+    :param used_bonus: Сколько бонусов уже применено к заказу.
+    :param total_sum: Полная стоимость заказа (товары + доставка).
+    """
+    builder = InlineKeyboardBuilder()
 
-        ])
-    else:
-        rows.append([
-            InlineKeyboardButton(text="Оставить бонусы", callback_data="bonus:skip"),
-        ])
-    rows.append([InlineKeyboardButton(text="✅ Всё верно", callback_data="confirm:ok")])
-    rows.append([InlineKeyboardButton(text="Начать заново", callback_data="confirm:restart")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="addr:back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    # Основные кнопки: "Подтвердить" и "Начать заново"
+    builder.button(
+        text="✅ Подтвердить и оформить",
+        callback_data="confirm:ok"
+    )
+    builder.button(
+        text="⬅️ Начать заново",
+        callback_data="confirm:restart"
+    )
+
+    # Умная кнопка для бонусов:
+    # Показываем ее, только если у пользователя есть бонусы И есть на что их тратить (сумма > 0)
+    if bonuses > 0 and total_sum > 0:
+        if used_bonus > 0:
+            # Если бонусы уже применены, кнопка предлагает их отменить
+            builder.button(
+                text=f"Не списывать бонусы ({used_bonus} ₽)",
+                callback_data="bonus:skip"
+            )
+        else:
+            # Если бонусы не применены, кнопка предлагает их списать
+            builder.button(
+                text=f"💸 Списать бонусы ({bonuses} ₽)",
+                callback_data="bonus:use"
+            )
+
+    # Располагаем кнопки: 2 в первой строке, 1 (если есть) во второй.
+    builder.adjust(2, 1)
+
+    return builder.as_markup()
 
 
 def get_profile_inline_keyboard() -> InlineKeyboardMarkup:
@@ -142,3 +168,24 @@ def cancel_payment(amount_to_pay: int, order_id: int) -> InlineKeyboardMarkup:
             )
         ]
     ])
+
+
+def back_to_delivery_choice_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура с одной кнопкой "Назад" для возврата к выбору способа доставки.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Назад к выбору способа доставки", callback_data="cart:back")
+    return builder.as_markup()
+
+
+def confirm_geoposition_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура для подтверждения правильности найденной геоточки.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, все верно", callback_data="geo:confirm")
+    builder.button(text="📍 Указать вручную", callback_data="geo:manual")
+    builder.button(text="⬅️ Назад", callback_data="cart:back")
+    builder.adjust(2, 1)
+    return builder.as_markup()

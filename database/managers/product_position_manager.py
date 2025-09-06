@@ -12,28 +12,34 @@ class ProductPositionManager:
         return [dict(r) for r in await self.db.fetch(sql)]
 
     async def list_not_empty_order_positions(self) -> list[dict]:
-        sql = "SELECT id, title, price, quantity FROM product_position WHERE quantity>0 ORDER BY id"
+        sql = "SELECT id, title, price, quantity, weight_kg FROM product_position WHERE quantity>0 ORDER BY id"
         return [dict(r) for r in await self.db.fetch(sql)]
 
     async def get_order_position_by_ids(self, ids: list[int]) -> list[dict]:
         if not ids:
             return []
-        sql = "SELECT id, title, price, quantity FROM product_position WHERE id = ANY($1)"
-        return [dict(r) for r in await self.db.fetch(sql, ids)]
+        # Выбираем все поля с помощью '*'
+        sql = "SELECT * FROM product_position WHERE id = ANY($1)"
+        records = await self.db.fetch(sql, ids)
+        return [dict(r) for r in records]
 
-    async def get_order_position_by_id(self, position_id: int) -> Optional[dict]:
-        sql = "SELECT id, title, price, quantity FROM product_position WHERE id = $1"
-        rec = await self.db.fetchrow(sql, position_id)
+    async def get_order_position_by_id(self, pos_id: int) -> Optional[dict]:
+        # Просто выбираем все поля
+        sql = "SELECT * FROM product_position WHERE id = $1"
+        rec = await self.db.fetchrow(sql, pos_id)
         return dict(rec) if rec else None
 
-    async def create_position(self, title: str, price: int, quantity: int) -> int:
-        title = title.strip()
+    async def create_position(
+            self,
+            title: str, price: int, quantity: int,
+            weight_kg: float, length_m: float, width_m: float, height_m: float  # <-- НОВЫЕ АРГУМЕНТЫ
+    ) -> int:
         sql = """
-              INSERT INTO product_position (title, price, quantity)
-              VALUES ($1, $2, $3)
-              RETURNING id \
-              """
-        return int(await self.db.fetchval(sql, title, int(price), int(quantity)))
+            INSERT INTO product_position (title, price, quantity, weight_kg, length_m, width_m, height_m)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+            """
+        return await self.db.fetchval(sql, title, price, quantity, weight_kg, length_m, width_m, height_m)
 
     async def update_fields(
             self,
@@ -80,3 +86,13 @@ class ProductPositionManager:
             return True, None
         except Exception:
             return False, None
+
+    async def update_weight(self, pos_id: int, weight_kg: float):
+        """Обновляет вес товара."""
+        sql = "UPDATE product_position SET weight_kg = $1 WHERE id = $2"
+        await self.db.execute(sql, weight_kg, pos_id)
+
+    async def update_dims(self, pos_id: int, length_m: float, width_m: float, height_m: float):
+        """Обновляет габариты товара."""
+        sql = "UPDATE product_position SET length_m = $1, width_m = $2, height_m = $3 WHERE id = $4"
+        await self.db.execute(sql, length_m, width_m, height_m, pos_id)

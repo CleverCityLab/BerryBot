@@ -1,3 +1,5 @@
+from typing import Optional
+
 from database.async_db import AsyncDatabase
 
 
@@ -8,6 +10,47 @@ class BuyerInfoManager:
     async def is_registered(self, user_id: int) -> bool:
         sql = "SELECT EXISTS (SELECT 1 FROM buyer_info WHERE user_id = $1);"
         return await self.db.fetchval(sql, user_id)
+
+    async def upsert_address_details(
+            self,
+            tg_user_id: int,
+            full_address: str,
+            porch: Optional[str],
+            floor: Optional[str],
+            apartment: Optional[str]
+    ):
+        """
+        Обновляет или вставляет (UPSERT) детализированный адрес пользователя.
+        """
+        # Сначала получаем внутренний user_id по tg_user_id
+        user_id = await self.db.fetchval("SELECT id FROM user_info WHERE tg_user_id = $1", tg_user_id)
+        if not user_id:
+            # Такого быть не должно, если пользователь дошел до этого шага, но проверка важна
+            return
+
+        sql = """
+            INSERT INTO buyer_info (user_id, address, porch, floor, apartment, name_surname, tel_num)
+            VALUES ($1, $2, $3, $4, $5, 'не указано', 'не указан')
+            ON CONFLICT (user_id) DO UPDATE SET
+                address = EXCLUDED.address,
+                porch = EXCLUDED.porch,
+                floor = EXCLUDED.floor,
+                apartment = EXCLUDED.apartment;
+            """
+        await self.db.execute(sql, user_id, full_address, porch, floor, apartment)
+
+    async def get_profile_by_tg(self, tg_user_id: int) -> Optional[dict]:
+        """
+        Возвращает полный профиль пользователя, включая детали адреса.
+        """
+        sql = """
+            SELECT b.name_surname, b.tel_num, b.tg_username, b.address, b.porch, b.floor, b.apartment
+            FROM buyer_info b
+            JOIN user_info u ON u.id = b.user_id
+            WHERE u.tg_user_id = $1
+            """
+        record = await self.db.fetchrow(sql, tg_user_id)
+        return dict(record) if record else None
 
     async def create_buyer_info(
             self,

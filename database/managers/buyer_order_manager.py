@@ -1,7 +1,9 @@
 from collections import namedtuple
 from datetime import date
 from typing import Optional
+import json
 
+from aiogram.types import SuccessfulPayment
 from database.async_db import AsyncDatabase
 from database.models.buyer_orders import BuyerOrders
 
@@ -9,8 +11,11 @@ from utils.statuses import (
     ACTIVE_STATUSES, FINISHED_STATUSES, AWAITING_PICKUP,
     ALLOWED_FROM, S_FINISHED, S_CANCELLED
 )
+from utils.logger import get_logger
 
-Item = namedtuple("Item", "title price qty")
+# Добавим новые поля в namedtuple для удобства
+Item = namedtuple("Item", "title price qty weight_kg length_m width_m height_m")
+log = get_logger("[BuyerOrderManager]")
 
 
 class BuyerOrderManager:
@@ -65,40 +70,39 @@ class BuyerOrderManager:
     async def cancel_order(self, order_id: int):
         async with self.db.pool.acquire() as conn:
             async with conn.transaction():
-                # 1. Получаем информацию о заказе и товарах в нем
                 order_info = await conn.fetchrow(
                     "SELECT buyer_id, used_bonus, status FROM buyer_orders WHERE id = $1 FOR UPDATE", order_id)
+                if not order_info or order_info['status'] not in ACTIVE_STATUSES:
+                    log.warning(f"Попытка отменить уже неактивный заказ #{order_id}")
+                    return
 
                 items_to_return = await conn.fetch("SELECT position_id, qty FROM order_items WHERE order_id = $1",
                                                    order_id)
 
-                # 2. Возвращаем товары на склад
                 if items_to_return:
                     await conn.executemany(
                         "UPDATE product_position SET quantity = quantity + $2 WHERE id = $1",
                         [(item['position_id'], item['qty']) for item in items_to_return]
                     )
-
-                # 3. Возвращаем бонусы пользователю
                 if order_info['used_bonus'] > 0:
                     await conn.execute(
                         "UPDATE buyer_info SET bonus_num = bonus_num + $1 WHERE user_id = $2",
                         order_info['used_bonus'], order_info['buyer_id']
                     )
-
-                # 4. Обновляем статус заказа
                 await conn.execute("UPDATE buyer_orders SET status = 'cancelled' WHERE id = $1", order_id)
+                log.info(f"Заказ #{order_id} отменен. Товары и бонусы возвращены.")
 
     async def list_items_by_order_id(self, order_id: int) -> list[Item]:
         sql = """
-              SELECT pp.title, pp.price, oi.qty
-              FROM order_items oi
-                       JOIN product_position pp ON pp.id = oi.position_id
-              WHERE oi.order_id = $1
-              ORDER BY pp.title;
-              """
+                      SELECT pp.title, pp.price, oi.qty, pp.weight_kg, pp.length_m, pp.width_m, pp.height_m
+                      FROM order_items oi
+                      JOIN product_position pp ON pp.id = oi.position_id
+                      WHERE oi.order_id = $1
+                      ORDER BY pp.title;
+                      """
         recs = await self.db.fetch(sql, order_id)
-        return [Item(r["title"], r["price"], r["qty"]) for r in recs]
+        return [Item(r["title"], r["price"], r["qty"], r["weight_kg"], r["length_m"], r["width_m"], r["height_m"]) for r
+                in recs]
 
     async def order_total_sum_by_order_id(self, order_id: int) -> int:
         sql = """
@@ -112,11 +116,12 @@ class BuyerOrderManager:
     async def create_order(
             self,
             tg_user_id: int,
-            items: dict[int, int],  # {position_id: qty}
+            items: dict[int, int],
             delivery_way: str,
             address: Optional[str],
             used_bonus: int,
-    ) -> tuple[Optional[int], str | None]:  # ## <<< ИЗМЕНЕНО: возвращает (order_id | None, error | None)
+            delivery_cost: float = 0.0  # <-- НОВЫЙ АРГУМЕНТ
+    ) -> tuple[Optional[int], str | None]:
         """
         Проверяем склад, создаём заказ со статусом 'pending_payment',
         позиции, уменьшаем остатки и списываем бонусы.
@@ -138,15 +143,7 @@ class BuyerOrderManager:
 
                 # 2) блокируем выбранные позиции склада
                 pids = list(items.keys())
-                rows = await conn.fetch(
-                    """
-                    SELECT id, title, quantity, price
-                    FROM product_position
-                    WHERE id = ANY ($1::bigint[])
-                        FOR UPDATE
-                    """,
-                    pids,
-                )
+                rows = await conn.fetch("SELECT * FROM product_position WHERE id = ANY ($1::bigint[]) FOR UPDATE", pids)
                 stock = {r["id"]: r for r in rows}
 
                 # отсутствующие id
@@ -186,16 +183,11 @@ class BuyerOrderManager:
                 delivery_date = None if delivery_way == "pickup" else date.today()
                 order_id = await conn.fetchval(
                     """
-                    INSERT INTO buyer_orders
-                    (buyer_id, status, delivery_way, delivery_address, used_bonus, registration_date, delivery_date)
-                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5)
+                    INSERT INTO buyer_orders (buyer_id, status, delivery_way, delivery_address, used_bonus, registration_date, delivery_date, delivery_cost)
+                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6)
                     RETURNING id
-                    """,  # ## <<< ИЗМЕНЕНО: статус 'pending_payment'
-                    uid,
-                    delivery_way,
-                    address,
-                    safe_bonus,
-                    delivery_date,
+                    """,
+                    uid, delivery_way, address, used_bonus, delivery_date, delivery_cost
                 )
 
                 # 6) вставляем позиции и уменьшаем склад
@@ -230,7 +222,7 @@ class BuyerOrderManager:
                         safe_bonus,
                     )
 
-        return order_id, None  # ## <<< ИЗМЕНЕНО: возвращаем ID заказа
+        return order_id, None  # возвращаем ID заказа
 
     async def get_order_by_id(self, order_id: int) -> BuyerOrders | None:
         rec = await self.db.fetchrow("SELECT * FROM buyer_orders WHERE id = $1", order_id)
@@ -353,24 +345,35 @@ class BuyerOrderManager:
         return data
 
     async def mark_order_as_paid_by_bonus(self, order_id: int) -> bool:
-        """
-        Обновляет статус заказа на 'processing', если он был полностью оплачен бонусами.
-        Возвращает True в случае успеха.
-        """
-        async with self.db.pool.acquire() as conn:
-            # Обновляем статус и ставим дату "оплаты"
-            result = await conn.execute(
-                """
-                UPDATE buyer_orders
-                SET status = 'processing',
-                    payment_date = CURRENT_TIMESTAMP
-                WHERE id = $1 AND status = 'pending_payment'
-                """,
-                order_id
-            )
+        result = await self.db.execute(
+            """
+            UPDATE buyer_orders SET status = 'processing', payment_date = CURRENT_TIMESTAMP
+            WHERE id = $1 AND status = 'pending_payment'
+            """,
+            order_id
+        )
+        if 'UPDATE 1' in result:
+            log.info(f"Статус заказа #{order_id} (оплачен бонусами) обновлен на 'processing'.")
+            return True
+        return False
 
-            # result содержит строку "UPDATE N", где N - кол-во обновленных строк
-            if 'UPDATE 1' in result:
-                return True
-            else:
-                return False
+    async def save_claim_id(self, order_id: int, claim_id: str):
+        """Сохраняет ID заявки из Яндекса в соответствующий заказ."""
+        sql = "UPDATE buyer_orders SET yandex_claim_id = $1 WHERE id = $2"
+        await self.db.execute(sql, claim_id, order_id)
+
+    async def mark_order_as_paid(self, order_id: int, payment_info: SuccessfulPayment):
+        payment_data = {
+            "currency": payment_info.currency, "total_amount": payment_info.total_amount,
+            "invoice_payload": payment_info.invoice_payload,
+            "telegram_payment_charge_id": payment_info.telegram_payment_charge_id,
+            "provider_payment_charge_id": payment_info.provider_payment_charge_id,
+        }
+        payment_json = json.dumps(payment_data)
+        await self.db.execute(
+            """
+            UPDATE buyer_orders SET status = 'processing', payment_date = CURRENT_TIMESTAMP, payment_info = $1
+            WHERE id = $2 AND status = 'pending_payment'
+            """,
+            payment_json, order_id
+        )

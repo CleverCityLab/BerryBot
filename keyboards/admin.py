@@ -1,4 +1,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
 from utils.statuses import S_WAITING, S_READY, S_TRANSFERRING, S_FINISHED
 
 
@@ -17,6 +19,8 @@ def admin_pos_detail(pid: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Изменить название", callback_data=f"adm-pos:edit-title:{pid}")],
         [InlineKeyboardButton(text="Изменить цену", callback_data=f"adm-pos:edit-price:{pid}")],
         [InlineKeyboardButton(text="Изменить количество", callback_data=f"adm-pos:edit-qty:{pid}")],
+        [InlineKeyboardButton(text="Изменить вес", callback_data=f"adm-pos:edit-weight:{pid}")],
+        [InlineKeyboardButton(text="Изменить габариты", callback_data=f"adm-pos:edit-dims:{pid}")],
         [InlineKeyboardButton(text="Удалить", callback_data=f"adm-pos:delete:{pid}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm-pos:back-list")],
     ])
@@ -98,3 +102,33 @@ def notify_confirm_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Изменить", callback_data="notify:redo")],
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel-fsm-admin")],
     ])
+
+
+def admin_warehouse_detail_kb(warehouse_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для детального просмотра и редактирования склада."""
+    builder = InlineKeyboardBuilder()
+
+    builder.button(text="📝 Изменить Название", callback_data=f"wh:edit:name:{warehouse_id}")
+    builder.button(text="📝 Изменить Адрес", callback_data=f"wh:edit:address:{warehouse_id}")
+    builder.button(text="📝 Изменить Подъезд", callback_data=f"wh:edit:porch:{warehouse_id}")
+    builder.button(text="📝 Изменить Этаж", callback_data=f"wh:edit:floor:{warehouse_id}")
+    builder.button(text="📝 Изменить Кв./Офис", callback_data=f"wh:edit:apartment:{warehouse_id}")
+    builder.button(text="📝 Изменить Контактное лицо", callback_data=f"wh:edit:contact_name:{warehouse_id}")
+    builder.button(text="📝 Изменить Телефон", callback_data=f"wh:edit:contact_phone:{warehouse_id}")
+    # --- НОВАЯ КНОПКА ---
+    builder.button(text="📍 Обновить Координаты", callback_data=f"wh:edit:location:{warehouse_id}")
+
+    builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_create_warehouse_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура, предлагающая создать склад по умолчанию, если он не найден.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Создать склад по умолчанию", callback_data="wh:create")
+    builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")
+    builder.adjust(1)
+    return builder.as_markup()

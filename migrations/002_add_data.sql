@@ -43,3 +43,13 @@ VALUES
     -- заказ 5 (cancelled)
     (5, 3, 2),
     (5, 2, 1);
+
+-- Заполним таблицу начальными данными (вашим текущим складом)
+INSERT INTO warehouses (name, address, latitude, longitude, contact_name, contact_phone, is_default)
+VALUES ('Основной склад',
+        'Россия, Москва, улица Льва Толстого, 16',
+        55.7336700,
+        37.5878740,
+        'Иван Менеджер',
+        '+79001234567',
+        TRUE);
