@@ -218,7 +218,8 @@ async def _parse_float(text: str) -> Union[float, None]:
     """Вспомогательная функция для парсинга положительных float чисел."""
     try:
         value = float(text.replace(',', '.'))  # Заменяем запятую на точку для удобства
-        if value < 0: return None
+        if value < 0:
+            return None
         return value
     except (ValueError, TypeError):
         return None
@@ -856,19 +857,23 @@ def format_warehouse_info(warehouse_data: dict) -> str:
 
     address_line = warehouse_data.get('address', 'не указан')
     details = []
-    if warehouse_data.get('porch'): details.append(f"подъезд {warehouse_data['porch']}")
-    if warehouse_data.get('floor'): details.append(f"этаж {warehouse_data['floor']}")
-    if warehouse_data.get('apartment'): details.append(f"кв/офис {warehouse_data['apartment']}")
+    if warehouse_data.get('porch'):
+        details.append(f"подъезд {warehouse_data['porch']}")
+    if warehouse_data.get('floor'):
+        details.append(f"этаж {warehouse_data['floor']}")
+    if warehouse_data.get('apartment'):
+        details.append(f"кв/офис {warehouse_data['apartment']}")
     if details:
         address_line += f" ({', '.join(details)})"
 
     return (
-        "<b>🚚 Информация о складе для отправки заказов:</b>\n\n"
-        f"<b>Название:</b> {warehouse_data.get('name', 'не указано')}\n"
-        f"<b>Адрес:</b> {address_line}\n"
-        f"<b>Контактное лицо:</b> {warehouse_data.get('contact_name', 'не указано')}\n"
-        f"<b>Телефон:</b> <code>{warehouse_data.get('contact_phone', 'не указан')}</code>"
-        f"<b>Координаты (шир, долг):</b> <code>{warehouse_data.get('latitude')}, {warehouse_data.get('longitude')}</code>"
+        "🚚 Информация о складе для отправки заказов:\n\n"
+        f"Название: {warehouse_data.get('name', 'не указано')}\n"
+        f"Адрес: {address_line}\n"
+        f"Контактное лицо: {warehouse_data.get('contact_name', 'не указано')}\n"
+        f"Телефон: {warehouse_data.get('contact_phone', 'не указан')}"
+        f"Координаты (шир, долг): <code>{warehouse_data.get('latitude')},"
+        f" {warehouse_data.get('longitude')}"
     )
 
 

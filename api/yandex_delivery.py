@@ -114,9 +114,12 @@ class YandexDeliveryClient:
             "coordinates": [float(warehouse_info["longitude"]), float(warehouse_info["latitude"])]
         }
         # Добавляем детали склада, если они есть в базе
-        if warehouse_info.get("porch"): source_address["porch"] = warehouse_info["porch"]
-        if warehouse_info.get("floor"): source_address["sfloor"] = warehouse_info["floor"]
-        if warehouse_info.get("apartment"): source_address["sflat"] = warehouse_info["apartment"]
+        if warehouse_info.get("porch"):
+            source_address["porch"] = warehouse_info["porch"]
+        if warehouse_info.get("floor"):
+            source_address["sfloor"] = warehouse_info["floor"]
+        if warehouse_info.get("apartment"):
+            source_address["sflat"] = warehouse_info["apartment"]
 
         # --- 3. Собираем объект адреса для ТОЧКИ Б (Клиент) ---
         destination_address = {
@@ -172,18 +175,24 @@ class YandexDeliveryClient:
             "fullname": warehouse_info["address"],
             "coordinates": [float(warehouse_info["longitude"]), float(warehouse_info["latitude"])]
         }
-        if warehouse_info.get("porch"): source_address["porch"] = warehouse_info["porch"]
-        if warehouse_info.get("floor"): source_address["sfloor"] = warehouse_info["floor"]
-        if warehouse_info.get("apartment"): source_address["sflat"] = warehouse_info["apartment"]
+        if warehouse_info.get("porch"):
+            source_address["porch"] = warehouse_info["porch"]
+        if warehouse_info.get("floor"):
+            source_address["sfloor"] = warehouse_info["floor"]
+        if warehouse_info.get("apartment"):
+            source_address["sflat"] = warehouse_info["apartment"]
 
         # --- 3. Собираем объект адреса для ТОЧКИ Б (Клиент) ---
         destination_address = {
             "fullname": client_address,
             "coordinates": [client_lon, client_lat]
         }
-        if buyer_info.get("porch"): destination_address["porch"] = buyer_info["porch"]
-        if buyer_info.get("floor"): destination_address["sfloor"] = buyer_info["floor"]
-        if buyer_info.get("apartment"): destination_address["sflat"] = buyer_info["apartment"]
+        if buyer_info.get("porch"):
+            destination_address["porch"] = buyer_info["porch"]
+        if buyer_info.get("floor"):
+            destination_address["sfloor"] = buyer_info["floor"]
+        if buyer_info.get("apartment"):
+            destination_address["sflat"] = buyer_info["apartment"]
 
         # --- 4. Формируем финальный payload ---
         payload = {

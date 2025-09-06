@@ -51,10 +51,9 @@ class WarehouseManager:
         Создает новую запись о складе со всеми деталями.
         """
         sql = """
-            INSERT INTO warehouses (
-                name, address, latitude, longitude, contact_name, contact_phone, 
-                porch, floor, apartment, is_default
-            )
+            INSERT INTO warehouses (name, address, latitude, longitude,
+             contact_name, contact_phone,
+             porch, floor, apartment, is_default)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
             RETURNING id
             """

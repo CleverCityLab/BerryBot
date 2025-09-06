@@ -183,7 +183,8 @@ class BuyerOrderManager:
                 delivery_date = None if delivery_way == "pickup" else date.today()
                 order_id = await conn.fetchval(
                     """
-                    INSERT INTO buyer_orders (buyer_id, status, delivery_way, delivery_address, used_bonus, registration_date, delivery_date, delivery_cost)
+                    INSERT INTO buyer_orders (buyer_id, status, delivery_way,
+                     delivery_address, used_bonus, registration_date, delivery_date, delivery_cost)
                     VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6)
                     RETURNING id
                     """,

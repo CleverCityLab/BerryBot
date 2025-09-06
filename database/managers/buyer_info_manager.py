@@ -105,14 +105,14 @@ class BuyerInfoManager:
               """
         await self.db.execute(sql, tg_user_id, address)
 
-    async def get_profile_by_tg(self, tg_user_id: int):
-        sql = """
-              SELECT b.name_surname, b.tel_num, b.tg_username
-              FROM buyer_info b
-                       JOIN user_info u ON u.id = b.user_id
-              WHERE u.tg_user_id = $1 \
-              """
-        return await self.db.fetchrow(sql, tg_user_id)
+    #    async def get_profile_by_tg(self, tg_user_id: int):
+    #        sql = """
+    #              SELECT b.name_surname, b.tel_num, b.tg_username
+    #              FROM buyer_info b
+    #                       JOIN user_info u ON u.id = b.user_id
+    #              WHERE u.tg_user_id = $1 \
+    #              """
+    #        return await self.db.fetchrow(sql, tg_user_id)
 
     async def update_full_name_by_tg(self, tg_user_id: int, name_surname: str) -> None:
         sql = """

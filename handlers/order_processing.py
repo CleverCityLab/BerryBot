@@ -93,7 +93,8 @@ async def go_confirm(target: Message | CallbackQuery, state: FSMContext, buyer_i
 
     message = target if isinstance(target, Message) else target.message
     # Удаляем предыдущее сообщение и отправляем новое, чтобы избежать путаницы
-    if isinstance(target, CallbackQuery): await target.message.delete()
+    if isinstance(target, CallbackQuery):
+        await target.message.delete()
     await message.answer(text, parse_mode="Markdown", reply_markup=kb)
     await state.set_state(CreateOrder.confirm_order)
 
@@ -254,7 +255,7 @@ async def process_text_address(msg: Message, state: FSMContext, bot: Bot):
 
     await bot.send_location(chat_id=msg.chat.id, latitude=lat, longitude=lon)
     await msg.answer(
-        f"Я нашел адрес здесь. Все верно?",
+        "Я нашел адрес здесь. Все верно?",
         reply_markup=confirm_geoposition_kb()
     )
 
@@ -363,14 +364,16 @@ async def process_apartment_and_calculate(
     if not buyer_profile:
         await msg.answer("Ошибка: не удалось получить ваш профиль.")
         log.error(
-            f"Не удалось получить профиль пользователя {msg.from_user.id} при расчете доставки в хендлере process_apartment_and_calculate")
+            f"Не удалось получить профиль пользователя {msg.from_user.id}"
+            f" при расчете доставки в хендлере process_apartment_and_calculate")
         return
 
     # 2. Получаем данные о складе
     warehouse = await warehouse_manager.get_default_warehouse()
     if not warehouse:
         await notify_admins(bot,
-                            f"‼️ Критическая ошибка: не найден склад. Пользователь {msg.from_user.id} не может оформить доставку.")
+                            f"‼️ Критическая ошибка: не найден склад. "
+                            f"Пользователь {msg.from_user.id} не может оформить доставку.")
         await msg.answer("❗️Системная ошибка. Мы уже работаем над решением.")
         return
 
@@ -400,9 +403,12 @@ async def process_apartment_and_calculate(
         # Собираем полный адрес для отображения
         details = []
 
-        if buyer_profile.get('porch'): details.append(f"подъезд {buyer_profile['porch']}")
-        if buyer_profile.get('floor'): details.append(f"этаж {buyer_profile['floor']}")
-        if buyer_profile.get('apartment'): details.append(f"кв./офис {buyer_profile['apartment']}")
+        if buyer_profile.get('porch'):
+            details.append(f"подъезд {buyer_profile['porch']}")
+        if buyer_profile.get('floor'):
+            details.append(f"этаж {buyer_profile['floor']}")
+        if buyer_profile.get('apartment'):
+            details.append(f"кв./офис {buyer_profile['apartment']}")
         full_address_for_display = f"{main_address}, {', '.join(details)}" if details else main_address
 
         await state.update_data(
@@ -530,13 +536,14 @@ async def confirm_ok(
 
     elif final_amount_to_pay > 0:
         # --- СЛУЧАЙ 2: Сумма > 0, но < минимальной ---
-        await call.answer(f"Заказ отменен: сумма к оплате слишком мала.", show_alert=True)
+        await call.answer("Заказ отменен: сумма к оплате слишком мала.", show_alert=True)
         await buyer_order_manager.cancel_order(order_id)
 
         is_admin = call.from_user.id in get_admin_ids()
         bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
         await call.message.edit_text(
-            text=f"❗️Сумма к оплате ({final_amount_to_pay:.2f} руб.) меньше минимальной ({MIN_PAYMENT_AMOUNT} руб.). Заказ отменен.\n\n"
+            text=f"❗️Сумма к оплате ({final_amount_to_pay:.2f} руб.)"
+                 f" меньше минимальной ({MIN_PAYMENT_AMOUNT} руб.). Заказ отменен.\n\n"
                  "Выберите действие:\n"
                  f"Накоплено бонусов: `{bonuses or 0}` руб.",
             parse_mode="Markdown",

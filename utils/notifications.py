@@ -84,9 +84,9 @@ def format_order_for_admin(
     if delivery_way_text == "Доставка курьером":
         message_lines.append(f"   Адрес: `{order.delivery_address}`")
         if order.yandex_claim_id:
-            message_lines.append(f"   Яндекс.Доставка: `Заявка создана`")
+            message_lines.append("   Яндекс.Доставка: `Заявка создана`")
         else:
-            message_lines.append(f"   Яндекс.Доставка: `❗️Не удалось создать заявку`")
+            message_lines.append("   Яндекс.Доставка: `❗️Не удалось создать заявку`")
 
     message_lines.extend([
         "*- - - - - - - - - - - - - - - - -*",

@@ -559,7 +559,7 @@ async def handle_address_source_choice(
 
         await bot.send_location(chat_id=call.message.chat.id, latitude=lat, longitude=lon)
         await call.message.answer(
-            f"Я нашел ваш сохраненный адрес здесь. Все верно?",
+            "Я нашел ваш сохраненный адрес здесь. Все верно?",
             reply_markup=confirm_geoposition_kb()
         )
 
