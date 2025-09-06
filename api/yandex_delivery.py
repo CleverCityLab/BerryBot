@@ -127,9 +127,12 @@ class YandexDeliveryClient:
             "coordinates": [client_lon, client_lat]
         }
         # Добавляем детали клиента, если они есть в его профиле
-        if buyer_info.get("porch"): destination_address["porch"] = buyer_info["porch"]
-        if buyer_info.get("floor"): destination_address["sfloor"] = buyer_info["floor"]
-        if buyer_info.get("apartment"): destination_address["sflat"] = buyer_info["apartment"]
+        if buyer_info.get("porch"):
+            destination_address["porch"] = buyer_info["porch"]
+        if buyer_info.get("floor"):
+            destination_address["sfloor"] = buyer_info["floor"]
+        if buyer_info.get("apartment"):
+            destination_address["sflat"] = buyer_info["apartment"]
 
         # --- 4. Формируем финальный payload ---
         payload = {
