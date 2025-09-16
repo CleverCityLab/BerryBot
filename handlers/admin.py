@@ -802,6 +802,7 @@ async def adm_order_cancel_yes(
     except TelegramBadRequest as e:
         await handle_telegram_error(e, call=call)
 
+
 @admin_router.callback_query(F.data == "send-notification")
 @admin_only
 async def notify_start(call: CallbackQuery, state: FSMContext):

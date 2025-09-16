@@ -244,9 +244,11 @@ async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_mana
     await state.update_data(cart=cart)
     await call.message.edit_text("Выберите нужные позиции:", reply_markup=get_all_products(products, cart))
 
+
 # --- Шаг 1: Пользователь нажимает "Доставка" или "Самовывоз" ---
 @client_router.callback_query(CreateOrder.choose_delivery, F.data.startswith("del:"))
-async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_info_manager: BuyerInfoManager, product_position_manager: ProductPositionManager):
+async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_info_manager: BuyerInfoManager,
+                                 product_position_manager: ProductPositionManager):
     """
     Обрабатывает выбор способа доставки.
     """
@@ -263,6 +265,7 @@ async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_i
             "Введите адрес доставки (город, улица, дом) или сразу отправьте геоточку."
         )
         await state.set_state(CreateOrder.enter_address)
+
 
 # --- Шаг 3.1: Пользователь нажимает "Доставка" ---
 @client_router.callback_query(CreateOrder.choose_delivery, F.data == "del:delivery")
@@ -328,7 +331,8 @@ async def process_geoposition_confirm(call: CallbackQuery, state: FSMContext):
 
     if action == "confirm":
         await state.set_state(CreateOrder.enter_porch)
-        await call.message.answer("Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`):", parse_mode="Markdown")
+        await call.message.answer("Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`):",
+                                  parse_mode="Markdown")
         return
 
     if action == "manual":
@@ -367,7 +371,8 @@ async def process_floor(msg: Message, state: FSMContext):
     floor = msg.text.strip()
     await state.update_data(floor=floor if floor != '-' else None)
     await state.set_state(CreateOrder.enter_apartment)
-    await msg.answer("И последний шаг: введите **номер квартиры/офиса** (или отправьте прочерк `-`):", parse_mode="Markdown")
+    await msg.answer("И последний шаг: введите **номер квартиры/офиса** (или отправьте прочерк `-`):",
+                     parse_mode="Markdown")
 
 
 @client_router.message(CreateOrder.enter_apartment, F.text)
@@ -472,6 +477,7 @@ async def process_apartment_and_calculate(
 
     await msg.answer(f"Стоимость доставки: *{delivery_cost:.2f} руб.*", parse_mode="Markdown")
     await go_confirm(msg, state, buyer_info_manager, product_position_manager)
+
 
 # --- БЛОК ФИНАЛЬНОГО ПОДТВЕРЖДЕНИЯ И ОПЛАТЫ ---
 
@@ -774,7 +780,7 @@ async def _format_delivery_status(
             eta_time_str = point.get("visited_at", {}).get("expected")
             if not eta_time_str: continue
             eta_time_utc = datetime.fromisoformat(eta_time_str)
-            eta_time_local = eta_time_utc + timedelta(hours=3) # ИСПОЛЬЗУЙТЕ ВАШ TIMEZONE_OFFSET
+            eta_time_local = eta_time_utc + timedelta(hours=3)  # ИСПОЛЬЗУЙТЕ ВАШ TIMEZONE_OFFSET
             time_str = eta_time_local.strftime("%H:%M")
             if point.get("type") == "destination":
                 lines.append(f"🏠 Прибытие к вам: ~ *{time_str}*")

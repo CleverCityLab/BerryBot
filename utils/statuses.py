@@ -1,13 +1,13 @@
 # utils/statuses.py
 
 # --- 1. ОПРЕДЕЛЕНИЕ СТАТУСОВ ---
-S_WAITING = "waiting" # Устарел, но может использоваться в старых заказах
-S_PENDING_PAYMENT = "pending_payment" # Создан, ждет оплаты
-S_PROCESSING = "processing" # Оплачен, в обработке (сборка/ожидание)
-S_READY = "ready" # Готов к самовывозу
-S_TRANSFERRING = "transferring" # Передан в доставку
-S_FINISHED = "finished" # Успешно завершен
-S_CANCELLED = "cancelled" # Отменен
+S_WAITING = "waiting"  # Устарел, но может использоваться в старых заказах
+S_PENDING_PAYMENT = "pending_payment"  # Создан, ждет оплаты
+S_PROCESSING = "processing"  # Оплачен, в обработке (сборка/ожидание)
+S_READY = "ready"  # Готов к самовывозу
+S_TRANSFERRING = "transferring"  # Передан в доставку
+S_FINISHED = "finished"  # Успешно завершен
+S_CANCELLED = "cancelled"  # Отменен
 
 # --- 2. ГРУППЫ СТАТУСОВ (используем множества `{}` для производительности) ---
 
@@ -36,7 +36,6 @@ CANCELLABLE_STATUSES = {
     S_PROCESSING,
     S_READY,
 }
-
 
 # --- 3. ЛОГИКА ПЕРЕХОДОВ СТАТУСОВ (для кнопок в админке) ---
 ALLOWED_FROM = {

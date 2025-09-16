@@ -326,7 +326,8 @@ async def order_detail(call: CallbackQuery, buyer_order_manager, *, delivery_sta
         if "message is not modified" not in str(e):
             log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
             await handle_telegram_error(e, call=call)
-            
+
+
 @client_router.callback_query(F.data.startswith("cancel-no:"))
 async def cancel_no(call: CallbackQuery, buyer_order_manager):
     _, order_id, suffix = call.data.split(":")
@@ -486,6 +487,7 @@ async def order_cancel_yes(
         await handle_telegram_error(e, call=call)
         await call.message.answer(header, parse_mode="Markdown",
                                   reply_markup=get_orders_list_kb(orders, finished=False))
+
 
 @client_router.callback_query(F.data.startswith("back-to-list:"))
 async def back_to_list(call: CallbackQuery, buyer_order_manager):
