@@ -136,7 +136,7 @@ async def create_yandex_delivery_claim(
     # 2. Берем ЧИСТЫЙ адрес из ПРОФИЛЯ для геокодирования
     main_address_for_geocoding = buyer_profile.get("address")
     if not main_address_for_geocoding:
-        log.error(f"Нет адреса для доставки")
+        log.error("Нет адреса для доставки")
         await bot.send_message(user_id, "❗️Произошла ошибка при получении Вашего адреса. "
                                         "Пожалуйста, повторите попытку заказа")
         return
@@ -782,7 +782,8 @@ async def _format_delivery_status(
     if eta_info:
         for point in eta_info.get("route_points", []):
             eta_time_str = point.get("visited_at", {}).get("expected")
-            if not eta_time_str: continue
+            if not eta_time_str:
+                continue
             eta_time_utc = datetime.fromisoformat(eta_time_str)
             eta_time_local = eta_time_utc + timedelta(hours=3)  # ИСПОЛЬЗУЙТЕ ВАШ TIMEZONE_OFFSET
             time_str = eta_time_local.strftime("%H:%M")
