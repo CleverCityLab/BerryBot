@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery
 
+from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.warehouse_manager import WarehouseManager
 from database.managers.product_position_manager import ProductPositionManager
 from keyboards.admin import (admin_positions_list,
@@ -22,10 +23,11 @@ from keyboards.admin import (admin_positions_list,
                              admin_create_warehouse_kb
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
-from api.yandex_delivery import geocode_address
+from api.yandex_delivery import geocode_address, YandexDeliveryClient
 
 from utils.decorators import admin_only
 from utils.logger import get_logger
+from utils.notifications import notify_admins
 from utils.secrets import get_admin_ids
 
 log = get_logger("[Bot.Admin]")
@@ -567,8 +569,8 @@ def _order_detail_text(o: dict) -> str:
         f"*Дата оформления:* {o['registration_date']:%d.%m.%Y}\n"
         f"*Планируемая дата доставки:* {dlv_plan}\n"
     )
-    if o["delivery_way"] == "delivery":
-        text += f"*Адрес доставки:* {o.get('delivery_address') or '—'}\n"
+    if o["delivery_way"] == "delivery" and o.get("yandex_claim_id"):
+        text += "\n*Статус доставки:*\n⏳ _Нажмите 'Обновить статус доставки', чтобы получить информацию._"
     if is_finished:
         text += f"*Дата завершения:* {got_dt}\n"
     return text
@@ -706,32 +708,99 @@ async def adm_order_cancel_confirm(call: CallbackQuery):
 
 @admin_router.callback_query(F.data.startswith("adm-order:cancel-yes:"))
 @admin_only
-async def adm_order_cancel_yes(call: CallbackQuery, buyer_order_manager):
-    _, _, oid, suffix = call.data.split(":")
-    ok = await buyer_order_manager.admin_cancel(int(oid))
-    if not ok:
-        await call.answer("Этот заказ уже нельзя отменить", show_alert=True)
+async def adm_order_cancel_yes(
+        call: CallbackQuery,
+        bot: Bot,
+        buyer_order_manager: BuyerOrderManager,
+        yandex_delivery_client: YandexDeliveryClient
+):
+    try:
+        _, _, oid, suffix = call.data.split(":")
+        order_id = int(oid)
+    except (ValueError, IndexError):
+        await call.answer("Ошибка в данных.", show_alert=True)
         return
+
+    order = await buyer_order_manager.get_order_by_id(order_id)
+    if not order:
+        await call.answer("Заказ не найден.", show_alert=True)
+        return
+
+    # Если у заказа есть заявка в Яндексе, применяем умную логику
+    if order.yandex_claim_id:
+        await call.answer("Проверяем статус в Яндекс.Доставке...", show_alert=False)
+        claim_info = await yandex_delivery_client.get_claim_info(order.yandex_claim_id)
+
+        if not claim_info:
+            await call.answer("Не удалось получить информацию о заявке от Яндекса. Отмена невозможна.", show_alert=True)
+            return
+
+        yandex_status = claim_info.get("status")
+        yandex_final_statuses = {"failed", "delivered_finish", "returned_finish", "cancelled", "cancelled_with_payment",
+                                 "cancelled_by_taxi"}
+
+        # СЦЕНАРИЙ 1: Статус в Яндексе уже финальный (failed, returned_finish и т.д.).
+        # В этом случае мы принудительно отменяем заказ в нашей БД для синхронизации.
+        if yandex_status in yandex_final_statuses:
+            log.info(
+                f"Принудительная отмена заказа #{order_id} админом. Статус в Яндексе уже финальный: {yandex_status}")
+            await buyer_order_manager.cancel_order(order_id)
+            await call.answer(f"Заказ отменен (синхронизирован со статусом Яндекса).", show_alert=True)
+
+        # СЦЕНАРИЙ 2: Статус в Яндексе еще активный. Проверяем условия отмены.
+        else:
+            cancel_info = await yandex_delivery_client.get_cancellation_info(order.yandex_claim_id)
+            if cancel_info and cancel_info.get("cancel_state") == "free":
+                # Отмена бесплатна, отменяем в Яндексе и потом в БД
+                is_cancelled_on_yandex = await yandex_delivery_client.cancel_claim(
+                    claim_id=order.yandex_claim_id,
+                    cancel_state="free",
+                    version=claim_info.get("version", 1)
+                )
+                if not is_cancelled_on_yandex:
+                    await call.answer("Яндекс.Доставка вернула ошибку при отмене.", show_alert=True)
+                    return
+
+                await buyer_order_manager.cancel_order(order_id)
+                await call.answer("Заказ успешно отменён!", show_alert=True)
+
+            else:
+                # Отмена платная или недоступна для АКТИВНОГО заказа. Блокируем.
+                state = cancel_info.get('cancel_state', 'недоступна') if cancel_info else 'недоступна'
+                error_message = f"Отмена невозможна: заказ активен и отмена в Яндексе платная/недоступна (статус: {state})."
+                await call.answer(error_message, show_alert=True)
+
+                # Возвращаем админа на карточку заказа
+                full_order_data = await buyer_order_manager.admin_get_order(order_id)
+                if full_order_data:
+                    text = _order_detail_text(full_order_data)
+                    kb = admin_order_detail_kb(full_order_data, suffix=suffix)
+                    await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+                return
+
+    # СЦЕНАРИЙ 3: У заказа нет заявки в Яндексе. Просто отменяем его.
+    else:
+        await buyer_order_manager.cancel_order(order_id)
+        await call.answer("Заказ успешно отменён!", show_alert=True)
+
+    # --- ОБЩИЙ БЛОК ДЛЯ ВСЕХ УСПЕШНЫХ ОТМЕН ---
+
+    client_tg_id = await buyer_order_manager.get_tg_user_id_by_order(order)
+    if client_tg_id:
+        try:
+            await bot.send_message(client_tg_id, f"❗️Ваш заказ №{order_id} был отменен администратором.")
+        except TelegramBadRequest as e:
+            log.warning(f"Не удалось уведомить клиента {client_tg_id}: {e}")
 
     finished = (suffix == "fin")
     orders = await buyer_order_manager.admin_list_orders(finished=finished)
-    header = (
-        f"Кол-во ожидаемых заказов: `{len(orders)}`"
-        if not finished else
-        f"Кол-во завершённых заказов: `{len(orders)}`"
-    )
-
+    header = f"Кол-во {'завершённых' if finished else 'активных'} заказов: `{len(orders)}`"
     try:
         await call.message.edit_text(
-            header,
-            parse_mode="Markdown",
-            reply_markup=get_admin_orders_list_kb(orders, finished),
+            header, parse_mode="Markdown", reply_markup=get_admin_orders_list_kb(orders, finished)
         )
-        await call.answer("Заказ отменён")
     except TelegramBadRequest as e:
-        log.error(e)
         await handle_telegram_error(e, call=call)
-
 
 @admin_router.callback_query(F.data == "send-notification")
 @admin_only

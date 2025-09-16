@@ -270,8 +270,9 @@ class BuyerOrderManager:
         updated = await self.db.execute(
             "UPDATE buyer_orders SET status = $2, finished_at = CURRENT_DATE "
             "WHERE id = $1 AND status = ANY($3::order_status[])",
-            order_id, S_CANCELLED, ["waiting", "ready"]
+            order_id, S_CANCELLED, list(ACTIVE_STATUSES)
         )
+        # ------------------------
         return updated.upper().startswith("UPDATE")
 
     async def admin_today_revenue(self) -> int:
@@ -378,3 +379,46 @@ class BuyerOrderManager:
             """,
             payment_json, order_id
         )
+
+    async def get_tg_user_id_by_order(self, order: BuyerOrders) -> Optional[int]:
+        """
+        По внутреннему ID покупателя в заказе находит его Telegram ID.
+        """
+        sql = "SELECT tg_user_id FROM user_info WHERE id = $1"
+        return await self.db.fetchval(sql, order.buyer_id)
+
+    async def sync_order_status_from_yandex(self, order_id: int, yandex_status: str) -> bool:
+        """
+        Синхронизирует статус заказа в нашей БД со статусом из Яндекса.
+        Возвращает True, если статус был изменен.
+        """
+        # Карта статусов Яндекса -> наши статусы
+        yandex_to_local_map = {
+            "delivered_finish": "finished",
+            "returned_finish": "finished",  # Возврат тоже считаем завершенным
+            "failed": "cancelled",
+            "cancelled": "cancelled",
+            "cancelled_with_payment": "cancelled",
+            "cancelled_by_taxi": "cancelled"
+        }
+
+        new_local_status = yandex_to_local_map.get(yandex_status)
+
+        if not new_local_status:
+            # Если статус из Яндекса не является конечным, ничего не делаем
+            return False
+
+        # Обновляем статус в нашей БД, только если он еще не завершен
+        sql = """
+            UPDATE buyer_orders
+            SET status = $1::order_status, finished_at = CURRENT_DATE
+            WHERE id = $2 AND status NOT IN ('finished', 'cancelled')
+            RETURNING id;
+            """
+        updated_id = await self.db.fetchval(sql, new_local_status, order_id)
+
+        if updated_id:
+            log.info(f"Статус заказа #{order_id} синхронизирован с Яндексом. Новый статус: {new_local_status}")
+            return True
+
+        return False

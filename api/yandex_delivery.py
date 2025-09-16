@@ -333,3 +333,46 @@ class YandexDeliveryClient:
 
         log.warning(f"Не удалось получить ссылки для отслеживания для заявки {claim_id}. Ответ: {response_data}")
         return None
+
+    async def get_cancellation_info(self, claim_id: str) -> Optional[Dict[str, Any]]:
+        """
+        5. Узнаёт условия отмены заявки (метод /claims/cancel-info).
+        """
+        path = "/b2b/cargo/integration/v2/claims/cancel-info"
+        params = {"claim_id": claim_id}
+
+        response_data = await self._make_request("POST", path, params=params, json_payload={})
+
+        # --- ИСПРАВЛЕНИЕ: Проверяем поле 'cancel_state' ---
+        if response_data and "cancel_state" in response_data:
+            state = response_data['cancel_state']
+            log.info(f"Получена информация об отмене для заявки {claim_id}. Статус отмены: {state}")
+            return response_data
+
+        log.warning(f"Не удалось получить информацию об отмене для {claim_id}. Ответ: {response_data}")
+        return None
+
+    async def cancel_claim(self, claim_id: str, cancel_state: str, version: int = 1) -> bool:
+        """
+        6. Отменяет заявку (метод /claims/cancel).
+        Требует указания типа отмены (free/paid) и версии заявки.
+        """
+        path = "/b2b/cargo/integration/v2/claims/cancel"
+        params = {"claim_id": claim_id}
+
+        # --- ИСПРАВЛЕНИЕ: Формируем тело запроса ---
+        payload = {
+            "version": version,
+            "cancel_state": cancel_state
+        }
+
+        response_data = await self._make_request("POST", path, params=params, json_payload=payload)
+
+        # Успешный ответ содержит новый статус
+        if response_data and "status" in response_data:
+            new_status = response_data.get("status")
+            log.info(f"Заявка {claim_id} успешно отменена. Новый статус: {new_status}")
+            return True
+
+        log.error(f"Ошибка отмены заявки {claim_id}. Ответ: {response_data}")
+        return False

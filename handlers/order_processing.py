@@ -1,8 +1,8 @@
 # handlers/order_processing.py
 import asyncio
 from contextlib import suppress
-from datetime import datetime
-from typing import Union
+from datetime import datetime, timedelta
+from typing import Union, Tuple
 
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
@@ -16,11 +16,15 @@ from database.managers.buyer_info_manager import BuyerInfoManager
 from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.warehouse_manager import WarehouseManager
-from handlers.client import client_router
+from handlers.client import client_router, order_detail
+from keyboards.admin import admin_order_detail_kb
 from keyboards.client import (
     get_all_products, choice_of_delivery, delivery_address_select,
     confirm_create_order, confirm_geoposition_kb, get_main_inline_keyboard
 )
+from handlers.admin import _order_detail_text as format_admin_order_text
+from handlers.client import order_detail as show_client_order_detail
+from keyboards.admin import admin_order_detail_kb
 from utils.config import PAYMENT_TOKEN
 from utils.logger import get_logger
 from utils.notifications import notify_admins, format_order_for_admin
@@ -130,9 +134,17 @@ async def create_yandex_delivery_claim(
         await bot.send_message(user_id, "❗️Произошла ошибка: не найдены товары в вашем заказе.")
         return
 
-    coords = await geocode_address(order.delivery_address)
+    # 2. Берем ЧИСТЫЙ адрес из ПРОФИЛЯ для геокодирования
+    main_address_for_geocoding = buyer_profile.get("address")
+    if not main_address_for_geocoding:
+        log.error(f"Нет адреса для доставки")
+        await bot.send_message(user_id, "❗️Произошла ошибка при получении Вашего адреса. "
+                                        "Пожалуйста, повторите попытку заказа")
+        return
+
+    coords = await geocode_address(main_address_for_geocoding)
     if not coords:
-        error_msg = (f"Не удалось геокодировать адрес '{order.delivery_address}' "
+        error_msg = (f"Не удалось геокодировать адрес '{main_address_for_geocoding}' "
                      f"для заказа #{order_id} при создании заявки.")
         log.error(error_msg)
         await notify_admins(bot, error_msg)
@@ -180,6 +192,7 @@ async def create_yandex_delivery_claim(
     )
 
     if claim_id:
+        await asyncio.sleep(5)
         accepted_info = await yandex_delivery_client.accept_claim(claim_id)
         if accepted_info:  # <-- Проверяем, что ответ не None
             await buyer_order_manager.save_claim_id(order_id, claim_id)
@@ -231,23 +244,25 @@ async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_mana
     await state.update_data(cart=cart)
     await call.message.edit_text("Выберите нужные позиции:", reply_markup=get_all_products(products, cart))
 
-
+# --- Шаг 1: Пользователь нажимает "Доставка" или "Самовывоз" ---
 @client_router.callback_query(CreateOrder.choose_delivery, F.data.startswith("del:"))
-async def choose_delivery(call: CallbackQuery, state: FSMContext, buyer_info_manager: BuyerInfoManager,
-                          product_position_manager: ProductPositionManager):
+async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_info_manager: BuyerInfoManager, product_position_manager: ProductPositionManager):
+    """
+    Обрабатывает выбор способа доставки.
+    """
+    await call.answer()
     delivery_way = "delivery" if call.data.split(":")[1] == "delivery" else "pickup"
     await state.update_data(delivery_way=delivery_way)
 
     if delivery_way == "pickup":
+        # Если самовывоз, сразу переходим к подтверждению
         await go_confirm(call, state, buyer_info_manager, product_position_manager)
     else:
-        saved_address = await buyer_info_manager.get_address_by_tg(call.from_user.id)
-        await call.message.edit_text("Укажите адрес доставки:", reply_markup=delivery_address_select(saved_address))
+        # Если доставка, запускаем процесс ввода адреса
+        await call.message.edit_text(
+            "Введите адрес доставки (город, улица, дом) или сразу отправьте геоточку."
+        )
         await state.set_state(CreateOrder.enter_address)
-    await call.answer()
-
-
-# --- БЛОК ВВОДА И ВЕРИФИКАЦИИ АДРЕСА ---
 
 # --- Шаг 3.1: Пользователь нажимает "Доставка" ---
 @client_router.callback_query(CreateOrder.choose_delivery, F.data == "del:delivery")
@@ -313,7 +328,7 @@ async def process_geoposition_confirm(call: CallbackQuery, state: FSMContext):
 
     if action == "confirm":
         await state.set_state(CreateOrder.enter_porch)
-        await call.message.answer("Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`):")
+        await call.message.answer("Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`):", parse_mode="Markdown")
         return
 
     if action == "manual":
@@ -344,7 +359,7 @@ async def process_porch(msg: Message, state: FSMContext):
     porch = msg.text.strip()
     await state.update_data(porch=porch if porch != '-' else None)
     await state.set_state(CreateOrder.enter_floor)
-    await msg.answer("Принято. Теперь введите **этаж** (или отправьте прочерк `-`):")
+    await msg.answer("Принято. Теперь введите **этаж** (или отправьте прочерк `-`):", parse_mode="Markdown")
 
 
 @client_router.message(CreateOrder.enter_floor, F.text)
@@ -352,106 +367,111 @@ async def process_floor(msg: Message, state: FSMContext):
     floor = msg.text.strip()
     await state.update_data(floor=floor if floor != '-' else None)
     await state.set_state(CreateOrder.enter_apartment)
-    await msg.answer("И последний шаг: введите **номер квартиры/офиса** (или отправьте прочерк `-`):")
+    await msg.answer("И последний шаг: введите **номер квартиры/офиса** (или отправьте прочерк `-`):", parse_mode="Markdown")
 
 
 @client_router.message(CreateOrder.enter_apartment, F.text)
 async def process_apartment_and_calculate(
-        msg: Message, state: FSMContext, bot: Bot,
+        msg: Message,
+        state: FSMContext,
+        bot: Bot,
         buyer_info_manager: BuyerInfoManager,
         product_position_manager: ProductPositionManager,
         warehouse_manager: WarehouseManager,
         yandex_delivery_client: YandexDeliveryClient
 ):
-    # apartment = msg.text.strip()
-    # data = await state.get_data()
     """
-    Финальный шаг ввода адреса. Собирает все данные, сохраняет их,
-    рассчитывает стоимость доставки и переходит к подтверждению заказа.
+    Финальный шаг ввода адреса. Собирает, сохраняет, рассчитывает
+    и корректно обрабатывает все возможные ошибки.
     """
     apartment = msg.text.strip()
     await state.update_data(apartment=apartment if apartment != '-' else None)
     data = await state.get_data()
-
-    # --- ШАГ 1: СОХРАНЯЕМ ВСЕ ДЕТАЛИ В БД ---
     main_address = data.get("address", "")
+
+    # --- Общая функция для возврата в главное меню при ошибке ---
+    async def return_to_main_menu(error_message: str):
+        await msg.answer(error_message)
+        await state.clear()
+
+        is_admin = msg.from_user.id in get_admin_ids()
+        bonuses = await buyer_info_manager.get_user_bonuses_by_tg(msg.from_user.id)
+
+        await msg.answer(
+            text="Выбери действие: \n"
+                 f"Накоплено бонусов: `{bonuses or 0}` руб.",
+            parse_mode="Markdown",
+            reply_markup=get_main_inline_keyboard(is_admin)
+        )
+
+    # 1. Сохраняем все детали в БД
     await buyer_info_manager.upsert_address_details(
         tg_user_id=msg.from_user.id,
         full_address=main_address,
         porch=data.get('porch'),
         floor=data.get('floor'),
-        apartment=apartment if apartment != '-' else None
+        apartment=data.get('apartment')
     )
 
     await msg.answer("⏳ Адрес сохранен! Рассчитываем стоимость доставки...")
 
-    # --- ШАГ 2: ИЗВЛЕКАЕМ ПОЛНЫЙ ПРОФИЛЬ ИЗ БД ---
-    # Теперь buyer_profile содержит все, что мы только что сохранили
-    buyer_profile = await buyer_info_manager.get_profile_by_tg(msg.from_user.id)
-    if not buyer_profile:
-        await msg.answer("Ошибка: не удалось получить ваш профиль.")
-        log.error(
-            f"Не удалось получить профиль пользователя {msg.from_user.id}"
-            f" при расчете доставки в хендлере process_apartment_and_calculate")
-        return
-
-    # 2. Получаем данные о складе
+    # 2. Проверяем наличие склада
     warehouse = await warehouse_manager.get_default_warehouse()
     if not warehouse:
-        await notify_admins(bot,
-                            f"‼️ Критическая ошибка: не найден склад. "
-                            f"Пользователь {msg.from_user.id} не может оформить доставку.")
-        await msg.answer("❗️Системная ошибка. Мы уже работаем над решением.")
+        error_msg = f"‼️ Критическая ошибка: не найден склад. Пользователь {msg.from_user.id} не может оформить доставку."
+        log.error(error_msg)
+        await notify_admins(bot, error_msg)
+        await return_to_main_menu("❗️Произошла системная ошибка. Мы уже работаем над решением.")
         return
 
-    # 3. Готовим `items` для API
+    # 3. Проверяем наличие профиля
+    buyer_profile = await buyer_info_manager.get_profile_by_tg(msg.from_user.id)
+    if not buyer_profile:
+        log.error(f"Не найден профиль для {msg.from_user.id} на этапе расчета.")
+        await return_to_main_menu("❗️Произошла системная ошибка: не найден ваш профиль.")
+        return
+
+    # 4. Готовим `items` для API
     cart = data.get("cart", {})
     products = await product_position_manager.get_order_position_by_ids(list(cart.keys()))
     items_for_api = [
-        {
-            "quantity": cart.get(p['id'], 0),
-            "size": {"length": p['length_m'], "width": p['width_m'], "height": p['height_m']},
-            "weight": p['weight_kg']
-        }
+        {"quantity": cart.get(p['id'], 0),
+         "size": {"length": p['length_m'], "width": p['width_m'], "height": p['height_m']}, "weight": p['weight_kg']}
         for p in products if cart.get(p['id'], 0) > 0
     ]
 
-    delivery_cost = await yandex_delivery_client.calculate_price(
-        items=items_for_api,
-        client_address=main_address,  # Основной адрес для геокодирования
-        warehouse_info=warehouse,
-        buyer_info=dict(buyer_profile)  # Передаем полный профиль со всеми деталями
-    )
+    # 5. Вызываем API и обрабатываем возможный сбой
+    try:
+        delivery_cost = await yandex_delivery_client.calculate_price(
+            items=items_for_api,
+            client_address=main_address,
+            warehouse_info=warehouse,
+            buyer_info=dict(buyer_profile)
+        )
+    except Exception as e:
+        log.exception(f"Непредвиденное исключение в yandex_delivery_client.calculate_price: {e}")
+        delivery_cost = None  # Считаем, что расчет не удался
 
-    if delivery_cost is None:  # ... (обработка ошибки расчета)
+    if delivery_cost is None:
+        # Эта ветка теперь ловит и ошибку API, и непредвиденное исключение
+        await return_to_main_menu(
+            "❗️Не удалось рассчитать доставку по вашему адресу. Заказ отменен. Пожалуйста, попробуйте снова.")
         return
 
-        # --- ШАГ 4: ЗАВЕРШАЕМ ПРОЦЕСС ---
-        # Собираем полный адрес для отображения
-        details = []
+    # 6. Все успешно, завершаем процесс
+    details = []
+    if buyer_profile.get('porch'): details.append(f"подъезд {buyer_profile['porch']}")
+    if buyer_profile.get('floor'): details.append(f"этаж {buyer_profile['floor']}")
+    if buyer_profile.get('apartment'): details.append(f"кв./офис {buyer_profile['apartment']}")
+    full_address_for_display = f"{main_address}, {', '.join(details)}" if details else main_address
 
-        if buyer_profile.get('porch'):
-            details.append(f"подъезд {buyer_profile['porch']}")
-        if buyer_profile.get('floor'):
-            details.append(f"этаж {buyer_profile['floor']}")
-        if buyer_profile.get('apartment'):
-            details.append(f"кв./офис {buyer_profile['apartment']}")
-        full_address_for_display = f"{main_address}, {', '.join(details)}" if details else main_address
+    await state.update_data(
+        address=full_address_for_display,
+        delivery_cost=delivery_cost
+    )
 
-        await state.update_data(
-            address=full_address_for_display,  # В state сохраняем красивую полную строку
-            delivery_cost=delivery_cost
-        )
-
-        await msg.answer(f"Стоимость доставки: *{delivery_cost:.2f} руб.*", parse_mode="Markdown")
-        await go_confirm(msg, state, buyer_info_manager, product_position_manager)
-    # 7. Все успешно. Сохраняем стоимость и переходим к подтверждению.
-    await state.update_data(delivery_cost=delivery_cost)
     await msg.answer(f"Стоимость доставки: *{delivery_cost:.2f} руб.*", parse_mode="Markdown")
-
-    # Вызываем функцию, которая покажет финальный экран с кнопками "Оформить", "Бонусы" и т.д.
     await go_confirm(msg, state, buyer_info_manager, product_position_manager)
-
 
 # --- БЛОК ФИНАЛЬНОГО ПОДТВЕРЖДЕНИЯ И ОПЛАТЫ ---
 
@@ -693,94 +713,131 @@ async def cancel_payment_invoice(call: CallbackQuery, state: FSMContext, buyer_o
 
 
 async def _format_delivery_status(
+        order_id: int,
         claim_id: str,
-        yandex_delivery_client: YandexDeliveryClient
-) -> str:
+        yandex_delivery_client: YandexDeliveryClient,
+        buyer_order_manager: BuyerOrderManager
+) -> Tuple[str, bool]:
     """
-    Получает всю информацию о доставке из Яндекса и форматирует ее в текст.
+    Получает информацию о доставке и форматирует ее.
+    Возвращает (текст_статуса, флаг_нужно_полное_обновление).
     """
-    # Запрашиваем всю информацию параллельно для скорости
-    claim_info, eta_info, links_info, phone_info = await asyncio.gather(
-        yandex_delivery_client.get_claim_info(claim_id),
+    # 1. Получаем ОБЩИЙ СТАТУС заявки
+    claim_info = await yandex_delivery_client.get_claim_info(claim_id)
+    if not claim_info:
+        return "\n\n*Статус доставки:*\n❌ Не удалось получить информацию о заявке.", False
+
+    status = claim_info.get("status")
+    log.debug(f"Статус заявки {claim_id} в Яндексе: {status}")
+
+    # 2. СИНХРОНИЗИРУЕМ статус в нашей БД, если он конечный
+    was_status_updated = await buyer_order_manager.sync_order_status_from_yandex(order_id, status)
+
+    # --- ИСПРАВЛЕНИЕ: Сначала обрабатываем конечные и простые статусы, чтобы избежать лишних запросов ---
+    final_statuses_map = {
+        "delivered_finish": "✅ Заказ успешно завершен",
+        "returned_finish": "✅ Заказ успешно завершен (возврат)",
+        "failed": "❗️Заявка не удалась",
+        "cancelled": "❗️Заявка отменена",
+        "cancelled_with_payment": "❗️Заявка отменена (с оплатой)",
+        "cancelled_by_taxi": "❗️Заявка отменена таксопарком"
+    }
+    if status in final_statuses_map:
+        return f"\n\n*Статус доставки:*\n{final_statuses_map[status]} (статус: {status})", was_status_updated
+
+    if status in ("performer_lookup", "accepted", "ready_for_approval"):
+        return "\n\n*Статус доставки:*\n⏳ Идет поиск курьера...", was_status_updated
+
+    # --- ЕСЛИ СТАТУС АКТИВНЫЙ, запрашиваем ВСЕ ДЕТАЛИ параллельно ---
+    lines = ["\n\n*Статус доставки:*"]
+    eta_info, links_info, phone_info = await asyncio.gather(
         yandex_delivery_client.get_points_eta(claim_id),
         yandex_delivery_client.get_tracking_links(claim_id),
         yandex_delivery_client.get_courier_phone(claim_id)
     )
 
-    if not claim_info:
-        return "\n\n*Статус доставки:*\nНе удалось получить информацию о заявке."
-
-    status = claim_info.get("status")
-    if status in ("performer_lookup", "accepted", "ready_for_approval"):
-        return "\n\n*Статус доставки:*\n⏳ Идет поиск курьера..."
-
-    # --- Если курьер найден, собираем полную информацию ---
-    lines = ["\n\n*Статус доставки:*"]
-
-    # 1. Телефон курьера
+    # Телефон
     if phone_info and phone_info.get("phone"):
         phone = phone_info['phone']
         ext = f" (доб. {phone_info['ext']})" if phone_info.get('ext') else ""
-        lines.append(f"📞 Телефон курьера: `{phone}{ext}`")
+        lines.append(f"📞 *Телефон курьера:* `{phone}{ext}`")
 
-    # 2. Ссылка на отслеживание
+    # Ссылка
     if links_info:
         for point in links_info.get("route_points", []):
             if point.get("type") == "destination" and point.get("sharing_link"):
-                lines.append(f"🗺️ [Отследить на карте]({point['sharing_link']})")
+                lines.append(f"🗺️ [Отследить курьера на карте]({point['sharing_link']})")
                 break
-
-    # 3. Время прибытия (ETA)
+    # ETA
     if eta_info:
         for point in eta_info.get("route_points", []):
             eta_time_str = point.get("visited_at", {}).get("expected")
-            if not eta_time_str:
-                continue
+            if not eta_time_str: continue
+            eta_time_utc = datetime.fromisoformat(eta_time_str)
+            eta_time_local = eta_time_utc + timedelta(hours=3) # ИСПОЛЬЗУЙТЕ ВАШ TIMEZONE_OFFSET
+            time_str = eta_time_local.strftime("%H:%M")
+            if point.get("type") == "destination":
+                lines.append(f"🏠 Прибытие к вам: ~ *{time_str}*")
 
-            eta_time = datetime.fromisoformat(eta_time_str).strftime("%H:%M")
-            if point.get("type") == "source":
-                lines.append(f" sklad: Прибытие на склад: ~ *{eta_time}*")
-            elif point.get("type") == "destination":
-                lines.append(f"🏠 Прибытие к вам: ~ *{eta_time}*")
+    if len(lines) == 1:
+        lines.append("✅ Курьер назначен и скоро начнет движение.")
 
-    return "\n".join(lines)
+    return "\n".join(lines), was_status_updated
 
 
 @client_router.callback_query(F.data.startswith("delivery:refresh:"))
 async def refresh_delivery_status(
         call: CallbackQuery,
         buyer_order_manager: BuyerOrderManager,
-        yandex_delivery_client: YandexDeliveryClient
+        yandex_delivery_client: YandexDeliveryClient,
 ):
-    """
-    Обновляет информацию о доставке в сообщении о заказе.
-    Работает и для клиента, и для админа.
-    """
+    # Сразу отвечаем пользователю, чтобы он видел, что кнопка сработала
     await call.answer("Обновляю информацию...")
     order_id = int(call.data.split(":")[2])
 
-    # Получаем заказ из БД, чтобы найти yandex_claim_id
     order = await buyer_order_manager.get_order_by_id(order_id)
     if not (order and order.yandex_claim_id):
         await call.answer("Информация о заявке в Яндекс.Доставке не найдена.", show_alert=True)
         return
 
-    # Получаем основной текст сообщения (без старого статуса доставки)
-    base_text = call.message.text.split("\n\n*Статус доставки:*")[0]
+    # Получаем свежий текст статуса и флаг, нужно ли полностью перерисовывать карточку
+    delivery_status_text, needs_full_update = await _format_delivery_status(
+        order_id, order.yandex_claim_id, yandex_delivery_client, buyer_order_manager
+    )
 
-    # Получаем новый, актуальный статус
-    delivery_status_text = await _format_delivery_status(order.yandex_claim_id, yandex_delivery_client)
+    if needs_full_update:
+        # Если статус изменился на конечный (доставлен/отменен), полностью перерисовываем карточку
+        log.info(f"Статус заказа #{order_id} изменился на конечный. Полное обновление карточки.")
+        await show_client_order_detail(
+            call,
+            buyer_order_manager,
+            delivery_status_text=delivery_status_text
+        )
+        return
 
-    # Собираем новое сообщение и обновляем его
-    new_text = base_text + delivery_status_text
+    # --- ИСПРАВЛЕННАЯ ЛОГИКА ДЛЯ АКТИВНЫХ ЗАКАЗОВ ---
 
+    # 1. Правильно отделяем основную часть сообщения от блока со статусом доставки.
+    #    Это решает проблему с дублированием.
+    base_text = call.message.text.split("\n\nСтатус доставки:")[0]
+
+    # 2. Собираем полный новый текст сообщения.
+    new_text = base_text + "\n\n" + delivery_status_text
+
+    # 3. Проверяем, изменился ли текст.
+    if new_text == call.message.text:
+        # Если текст не изменился, сообщаем пользователю, что статус актуален.
+        await call.answer("Статус актуален.", show_alert=False)
+        return
+
+    # 4. Если текст изменился, редактируем сообщение.
     try:
         await call.message.edit_text(
             new_text,
-            parse_mode="Markdown",
-            reply_markup=call.message.reply_markup,  # Используем ту же клавиатуру, что и была
+            reply_markup=call.message.reply_markup,
             disable_web_page_preview=True
         )
     except TelegramBadRequest as e:
+        # Эта проверка на случай, если ошибка все же возникнет
         if "message is not modified" not in str(e):
-            log.error(f"Ошибка при обновлении статуса доставки: {e}")
+            log.error(f"Ошибка при обновлении статуса доставки для заказа #{order_id}: {e}")

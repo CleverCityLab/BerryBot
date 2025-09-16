@@ -1,7 +1,7 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from utils.statuses import S_WAITING, S_READY, S_TRANSFERRING, S_FINISHED
+from utils.statuses import S_WAITING, S_READY, S_TRANSFERRING, S_FINISHED, S_PROCESSING, S_CANCELLED
 
 
 def admin_positions_list(positions: list[dict]) -> InlineKeyboardMarkup:
@@ -62,31 +62,54 @@ def get_admin_orders_list_kb(orders: list[dict], finished: bool) -> InlineKeyboa
 
 
 def admin_order_detail_kb(order: dict, *, suffix: str) -> InlineKeyboardMarkup:
-    st, way = order["status"], order["delivery_way"]
-    rows: list[list[InlineKeyboardButton]] = []
+    """
+    Создает клавиатуру для детального просмотра заказа в админ-панели.
+    Кнопки зависят от текущего статуса заказа.
+    """
+    builder = InlineKeyboardBuilder()
+    status = order["status"]
+    delivery_way = order["delivery_way"]
+    order_id = order["id"]
 
-    if st == S_WAITING:
-        to_status = S_READY if way == "pickup" else S_TRANSFERRING
-        text = "Готов к получению" if way == "pickup" else "Передано в доставку"
-        rows.append([InlineKeyboardButton(text=text,
-                                          callback_data=f"adm-order:advance:{to_status}:{order['id']}:{suffix}")])
+    # --- НОВАЯ, УЛУЧШЕННАЯ ЛОГИКА ОТОБРАЖЕНИЯ КНОПОК ---
 
-    if (st == S_READY and way == "pickup") or (st == S_TRANSFERRING and way == "delivery"):
-        rows.append([InlineKeyboardButton(text="Завершить",
-                                          callback_data=f"adm-order:advance:{S_FINISHED}:{order['id']}:{suffix}")])
+    # Если заказ оплачен и находится в обработке (S_PROCESSING),
+    # админ должен решить, что с ним делать дальше.
+    if status == S_PROCESSING:
+        if delivery_way == "pickup":
+            # Для самовывоза предлагаем пометить "Готов к выдаче"
+            builder.button(
+                text="✅ Готов к выдаче",
+                callback_data=f"adm-order:advance:{S_READY}:{order_id}:{suffix}"
+            )
 
-    if st in (S_WAITING, S_READY):
-        rows.append([InlineKeyboardButton(text="❌ Отмена заказа",
-                                          callback_data=f"adm-order:cancel:{order['id']}:{suffix}")])
+    # Если заказ готов к самовывозу или уже передан в доставку,
+    # предлагаем его "Завершить".
+    if (status == S_READY and delivery_way == "pickup") or (status == S_TRANSFERRING and delivery_way == "delivery"):
+        builder.button(
+            text="🏁 Завершить заказ",
+            callback_data=f"adm-order:advance:{S_FINISHED}:{order_id}:{suffix}"
+        )
 
-    if order["delivery_way"] == "delivery" and order.get("yandex_claim_id"):
-        rows.append([InlineKeyboardButton(
+    # Отменить можно любой активный заказ, который еще не в пути и не готов
+    if status in (S_WAITING, S_PROCESSING, S_READY):
+        builder.button(
+            text="❌ Отменить заказ",
+            callback_data=f"adm-order:cancel:{order_id}:{suffix}"
+        )
+
+    # Если это заказ с доставкой и есть заявка в Яндексе, добавляем кнопку обновления
+    if delivery_way == "delivery" and status not in (S_FINISHED, S_CANCELLED):
+        builder.button(
             text="🔄 Обновить статус доставки",
-            callback_data=f"delivery:refresh:{order['id']}"  # Используем тот же callback
-        )])
+            callback_data=f"delivery:refresh:{order_id}"
+        )
 
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"adm-orders:back-list:{suffix}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    # Кнопка "Назад" есть всегда
+    builder.button(text="⬅️ Назад к списку", callback_data=f"adm-orders:back-list:{suffix}")
+
+    builder.adjust(1) # Каждая кнопка на своей строке
+    return builder.as_markup()
 
 
 def admin_cancel_confirm_kb(order_id: int, suffix: str) -> InlineKeyboardMarkup:
