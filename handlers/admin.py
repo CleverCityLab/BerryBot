@@ -27,7 +27,6 @@ from api.yandex_delivery import geocode_address, YandexDeliveryClient
 
 from utils.decorators import admin_only
 from utils.logger import get_logger
-from utils.notifications import notify_admins
 from utils.secrets import get_admin_ids
 
 log = get_logger("[Bot.Admin]")
@@ -745,7 +744,7 @@ async def adm_order_cancel_yes(
             log.info(
                 f"Принудительная отмена заказа #{order_id} админом. Статус в Яндексе уже финальный: {yandex_status}")
             await buyer_order_manager.cancel_order(order_id)
-            await call.answer(f"Заказ отменен (синхронизирован со статусом Яндекса).", show_alert=True)
+            await call.answer("Заказ отменен (синхронизирован со статусом Яндекса).", show_alert=True)
 
         # СЦЕНАРИЙ 2: Статус в Яндексе еще активный. Проверяем условия отмены.
         else:
@@ -767,7 +766,8 @@ async def adm_order_cancel_yes(
             else:
                 # Отмена платная или недоступна для АКТИВНОГО заказа. Блокируем.
                 state = cancel_info.get('cancel_state', 'недоступна') if cancel_info else 'недоступна'
-                error_message = f"Отмена невозможна: заказ активен и отмена в Яндексе платная/недоступна (статус: {state})."
+                error_message = (f"Отмена невозможна: заказ активен "
+                                 f"и отмена в Яндексе платная/недоступна (статус: {state}).")
                 await call.answer(error_message, show_alert=True)
 
                 # Возвращаем админа на карточку заказа

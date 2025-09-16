@@ -108,7 +108,7 @@ def admin_order_detail_kb(order: dict, *, suffix: str) -> InlineKeyboardMarkup:
     # Кнопка "Назад" есть всегда
     builder.button(text="⬅️ Назад к списку", callback_data=f"adm-orders:back-list:{suffix}")
 
-    builder.adjust(1) # Каждая кнопка на своей строке
+    builder.adjust(1)  # Каждая кнопка на своей строке
     return builder.as_markup()
 
 

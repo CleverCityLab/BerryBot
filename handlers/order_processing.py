@@ -16,15 +16,14 @@ from database.managers.buyer_info_manager import BuyerInfoManager
 from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.warehouse_manager import WarehouseManager
-from handlers.client import client_router, order_detail
-from keyboards.admin import admin_order_detail_kb
+from handlers.client import client_router
 from keyboards.client import (
     get_all_products, choice_of_delivery, delivery_address_select,
     confirm_create_order, confirm_geoposition_kb, get_main_inline_keyboard
 )
-from handlers.admin import _order_detail_text as format_admin_order_text
+
 from handlers.client import order_detail as show_client_order_detail
-from keyboards.admin import admin_order_detail_kb
+
 from utils.config import PAYMENT_TOKEN
 from utils.logger import get_logger
 from utils.notifications import notify_admins, format_order_for_admin
@@ -122,7 +121,7 @@ async def create_yandex_delivery_claim(
     buyer_profile = await buyer_info_manager.get_profile_by_tg(user_id)
 
     if not (order and warehouse and buyer_profile):
-        await notify_admins(bot, f"Не удалось собрать "
+        await notify_admins(bot, "Не удалось собрать "
                                  f"данные (заказ/склад/профиль) для заказа #{order_id}")
         await bot.send_message(user_id, "❗️Произошла ошибка при создании доставки. "
                                         "Мы уже занимаемся этим.")
@@ -423,7 +422,8 @@ async def process_apartment_and_calculate(
     # 2. Проверяем наличие склада
     warehouse = await warehouse_manager.get_default_warehouse()
     if not warehouse:
-        error_msg = f"‼️ Критическая ошибка: не найден склад. Пользователь {msg.from_user.id} не может оформить доставку."
+        error_msg = ("‼️ Критическая ошибка: не найден склад. "
+                     f"Пользователь {msg.from_user.id} не может оформить доставку.")
         log.error(error_msg)
         await notify_admins(bot, error_msg)
         await return_to_main_menu("❗️Произошла системная ошибка. Мы уже работаем над решением.")
@@ -460,14 +460,18 @@ async def process_apartment_and_calculate(
     if delivery_cost is None:
         # Эта ветка теперь ловит и ошибку API, и непредвиденное исключение
         await return_to_main_menu(
-            "❗️Не удалось рассчитать доставку по вашему адресу. Заказ отменен. Пожалуйста, попробуйте снова.")
+            "❗️Не удалось рассчитать доставку по вашему адресу."
+            " Заказ отменен. Пожалуйста, попробуйте снова.")
         return
 
     # 6. Все успешно, завершаем процесс
     details = []
-    if buyer_profile.get('porch'): details.append(f"подъезд {buyer_profile['porch']}")
-    if buyer_profile.get('floor'): details.append(f"этаж {buyer_profile['floor']}")
-    if buyer_profile.get('apartment'): details.append(f"кв./офис {buyer_profile['apartment']}")
+    if buyer_profile.get('porch'):
+        details.append(f"подъезд {buyer_profile['porch']}")
+    if buyer_profile.get('floor'):
+        details.append(f"этаж {buyer_profile['floor']}")
+    if buyer_profile.get('apartment'):
+        details.append(f"кв./офис {buyer_profile['apartment']}")
     full_address_for_display = f"{main_address}, {', '.join(details)}" if details else main_address
 
     await state.update_data(

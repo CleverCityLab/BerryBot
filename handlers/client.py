@@ -424,7 +424,9 @@ async def order_cancel_yes(
         cancel_info = await yandex_delivery_client.get_cancellation_info(order.yandex_claim_id)
 
         if not cancel_info or cancel_info.get("cancel_state") != "free":
-            price_info = f"(стоимость платной отмены: {cancel_info.get('price', 'N/A')} руб.)" if cancel_info and cancel_info.get(
+            price_info = (f"(стоимость платной отмены:"
+                          f" {cancel_info.get('price', 'N/A')} руб."
+                          f")") if cancel_info and cancel_info.get(
                 "cancel_state") == "paid" else ""
 
             cancel_state = cancel_info.get("cancel_state") if cancel_info else "неизвестно"
