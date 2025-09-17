@@ -348,7 +348,7 @@ async def cancel_no(call: CallbackQuery, buyer_order_manager):
 
     total = await buyer_order_manager.order_total_sum_by_order_id(order.id)
 
-    status_txt = status_map[order.status.value]
+    status_txt = status_map.get(order.status.value, order.status.value)
     delivery_txt = delivery_map[order.delivery_way.value]
 
     text = (
@@ -556,6 +556,19 @@ def _text_cart_preview(items: list[dict], total: int, delivery_way: str, address
     if delivery_way == "delivery":
         lines.append(f"Адрес: {address or '—'}")
     return "\n".join(lines)
+
+
+@client_router.callback_query(F.data.startswith("cart:page:"))
+async def on_cart_page(call: CallbackQuery, state: FSMContext, product_position_manager):
+    page = int(call.data.split(":")[-1])
+
+    data = await state.get_data()
+    cart: dict[int, int] = data.get("cart", {})
+    products = await product_position_manager.list_not_empty_order_positions()
+
+    kb = get_all_products(products, cart, page=page, page_size=20)
+    await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
 
 
 @client_router.callback_query(CreateOrder.choose_delivery, F.data == "cart:back")

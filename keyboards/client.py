@@ -1,3 +1,5 @@
+from math import ceil
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -71,9 +73,23 @@ def get_cancel_confirm_kb(order_id: int, suffix: str):
     )
 
 
-def get_all_products(products: list[dict], cart: dict[int, int]) -> InlineKeyboardMarkup:
-    rows = []
-    for p in products:
+def get_all_products(
+        products: list[dict],
+        cart: dict[int, int],
+        page: int = 1,
+        page_size: int = 20,
+) -> InlineKeyboardMarkup:
+    total = len(products)
+    total_pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, total_pages))  # clamp
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_products = products[start:end]
+
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for p in page_products:
         pid = p["id"]
         qty = cart.get(pid, 0)
         check = "✅" if qty > 0 else "🟩"
@@ -87,12 +103,27 @@ def get_all_products(products: list[dict], cart: dict[int, int]) -> InlineKeyboa
             plus_cb = f"cart:add:{pid}" if qty < p["quantity"] else "noop"
             rows.append([
                 InlineKeyboardButton(text="➖", callback_data=minus_cb),
-                InlineKeyboardButton(text=f"{qty} шт (доступно {p['quantity']})", callback_data="noop"),
+                InlineKeyboardButton(
+                    text=f"{qty} шт (доступно {p['quantity']})",
+                    callback_data="noop"
+                ),
                 InlineKeyboardButton(text="➕", callback_data=plus_cb),
             ])
 
+    if total_pages > 1:
+        prev_page = page - 1 if page > 1 else 1
+        next_page = page + 1 if page < total_pages else total_pages
+        rows.append([
+            InlineKeyboardButton(text="«", callback_data=f"cart:page:1" if page > 1 else "noop"),
+            InlineKeyboardButton(text="‹", callback_data=f"cart:page:{prev_page}" if page > 1 else "noop"),
+            InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"),
+            InlineKeyboardButton(text="›", callback_data=f"cart:page:{next_page}" if page < total_pages else "noop"),
+            InlineKeyboardButton(text="»", callback_data=f"cart:page:{total_pages}" if page < total_pages else "noop"),
+        ])
+
     rows.append([InlineKeyboardButton(text="Готово", callback_data="cart:done")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back-main")])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

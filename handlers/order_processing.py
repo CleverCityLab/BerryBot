@@ -314,7 +314,7 @@ async def process_manual_location(msg: Message, state: FSMContext):
         address=f"Геометка ({msg.location.latitude:.5f}, {msg.location.longitude:.5f})"
     )
     await state.set_state(CreateOrder.enter_porch)
-    await msg.answer("Точка принята! Теперь введите **подъезд** (или отправьте прочерк `-`):")
+    await msg.answer("Точка принята! Теперь введите **подъезд** (или отправьте прочерк `-`):", parse_mode="Markdown")
 
 
 # --- Шаг 3.4: Пользователь реагирует на карту ---

@@ -24,6 +24,7 @@ from keyboards.admin import (admin_positions_list,
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
+from utils.constants import status_map
 
 from utils.decorators import admin_only
 from utils.logger import get_logger
@@ -555,6 +556,8 @@ def _order_detail_text(o: dict) -> str:
     is_finished = o["status"] in ("finished", "cancelled")
     header = "*Заказ (завершённый)*" if is_finished else "*Заказ (активный)*"
 
+    status_txt = status_map.get(o['status'], o['status'])
+
     text = (
         f"{header}\n\n"
         f"*Имя фамилия:* {o['name_surname']}\n"
@@ -564,7 +567,7 @@ def _order_detail_text(o: dict) -> str:
         f"*Списано бонусов:* `{used} ₽`\n"
         f"*К оплате:* `{to_pay} ₽`\n\n"
         f"*Способ получения:* {way}\n"
-        f"*Статус:* {o['status']}\n"
+        f"*Статус:* {status_txt}\n"
         f"*Дата оформления:* {o['registration_date']:%d.%m.%Y}\n"
         f"*Планируемая дата доставки:* {dlv_plan}\n"
     )
