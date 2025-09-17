@@ -114,7 +114,7 @@ def get_all_products(
         prev_page = page - 1 if page > 1 else 1
         next_page = page + 1 if page < total_pages else total_pages
         rows.append([
-            InlineKeyboardButton(text="«", callback_data=f"cart:page:1" if page > 1 else "noop"),
+            InlineKeyboardButton(text="«", callback_data="cart:page:1" if page > 1 else "noop"),
             InlineKeyboardButton(text="‹", callback_data=f"cart:page:{prev_page}" if page > 1 else "noop"),
             InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"),
             InlineKeyboardButton(text="›", callback_data=f"cart:page:{next_page}" if page < total_pages else "noop"),
