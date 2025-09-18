@@ -944,7 +944,7 @@ def format_warehouse_info(warehouse_data: dict) -> str:
         f"Название: {warehouse_data.get('name', 'не указано')}\n"
         f"Адрес: {address_line}\n"
         f"Контактное лицо: {warehouse_data.get('contact_name', 'не указано')}\n"
-        f"Телефон: {warehouse_data.get('contact_phone', 'не указан')}"
+        f"Телефон: {warehouse_data.get('contact_phone', 'не указан')}\n"
         f"Координаты (шир, долг): `{warehouse_data.get('latitude')},"
         f" {warehouse_data.get('longitude')}`"
     )
@@ -1095,7 +1095,7 @@ async def start_create_warehouse(call: CallbackQuery, state: FSMContext):
     """Начинает FSM для создания склада."""
     await state.set_state(WarehouseCreate.waiting_for_name)
     await call.message.edit_text(
-        "**Шаг 1/7:** Введите **название** склада (например, 'Основной склад'):", parse_mode="Markdown")
+        "*Шаг 1/7:* Введите *название* склада (например, `Основной склад`):", parse_mode="Markdown")
     await call.answer()
 
 
@@ -1105,7 +1105,7 @@ async def process_create_warehouse_name(msg: Message, state: FSMContext):
     await state.update_data(name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_address)
     await msg.answer(
-        "**Шаг 2/7:** Теперь введите **адрес** склада (город, улица, дом) или сразу отправьте его **геолокацию**.",
+        "*Шаг 2/7:* Теперь введите *адрес* склада (город, улица, дом).",
         parse_mode="Markdown")
 
 
@@ -1118,7 +1118,7 @@ async def process_create_warehouse_text_address(msg: Message, state: FSMContext,
 
     coords = await geocode_address(address_text)
     if not coords:
-        await msg.answer("Не удалось найти такой адрес. Попробуйте ввести его подробнее или отправьте геоточку.")
+        await msg.answer("Не удалось найти такой адрес. Попробуйте ввести его подробнее")
         return
 
     lon, lat = coords
@@ -1129,7 +1129,6 @@ async def process_create_warehouse_text_address(msg: Message, state: FSMContext,
     await msg.answer("Я нашел склад здесь. Местоположение верное?", reply_markup=confirm_geoposition_kb())
 
 
-@admin_router.message(WarehouseCreate.waiting_for_address, F.location)
 @admin_router.message(WarehouseCreate.confirm_geoposition, F.location)
 @admin_only
 async def process_create_warehouse_manual_location(msg: Message, state: FSMContext):
@@ -1137,12 +1136,11 @@ async def process_create_warehouse_manual_location(msg: Message, state: FSMConte
     await state.update_data(
         latitude=msg.location.latitude,
         longitude=msg.location.longitude,
-        address=f"Геометка ({msg.location.latitude:.5f}, {msg.location.longitude:.5f})"
     )
     await state.set_state(WarehouseCreate.waiting_for_porch)
     await state.set_state(WarehouseCreate.waiting_for_porch)
     await msg.answer(
-        "**Шаг 3/7:** Точка принята! Теперь введите **подъезд** (или отправьте прочерк `-`, если его нет):",
+        "*Шаг 3/7:* Точка принята! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
         parse_mode="Markdown")
 
 
@@ -1160,12 +1158,9 @@ async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, stat
     if action == "confirm":
         await state.set_state(WarehouseCreate.waiting_for_porch)
         await call.message.answer(
-            "**Шаг 3/7:** Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`, если его нет):",
+            "*Шаг 3/7:* Отлично! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
             parse_mode="Markdown")
         return
-
-    if action == "manual":
-        await call.message.answer("Хорошо, пожалуйста, отправьте мне геолокацию склада (Скрепка 📎 -> Местоположение).")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_porch)
@@ -1173,7 +1168,7 @@ async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, stat
 async def process_create_warehouse_porch(msg: Message, state: FSMContext):
     await state.update_data(porch=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_floor)
-    await msg.answer("Шаг 4/7: Принято. Введите **этаж** (или `-`):", parse_mode="Markdown")
+    await msg.answer("*Шаг 4/7*: Принято. Введите *этаж* (или `-`):", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_floor)
@@ -1181,7 +1176,7 @@ async def process_create_warehouse_porch(msg: Message, state: FSMContext):
 async def process_create_warehouse_floor(msg: Message, state: FSMContext):
     await state.update_data(floor=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_apartment)
-    await msg.answer("Шаг 5/7: Принято. Введите **номер квартиры/офиса** (или `-`):", parse_mode="Markdown")
+    await msg.answer("*Шаг 5/7*: Принято. Введите *номер квартиры/офиса* (или `-`):", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_apartment)
@@ -1189,7 +1184,7 @@ async def process_create_warehouse_floor(msg: Message, state: FSMContext):
 async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
     await state.update_data(apartment=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_contact_name)
-    await msg.answer("**Шаг 6/7:** Адрес полностью собран! Теперь введите **имя контактного лица**:",
+    await msg.answer("*Шаг 6/7:* Адрес полностью собран! Теперь введите *имя контактного лица*:",
                      parse_mode="Markdown")
 
 
@@ -1198,7 +1193,7 @@ async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
 async def process_create_warehouse_contact_name(msg: Message, state: FSMContext):
     await state.update_data(contact_name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_contact_phone)
-    await msg.answer("**Шаг 7/7:** И последнее: введите **контактный телефон** склада:", parse_mode="Markdown")
+    await msg.answer("*Шаг 7/7:* И последнее: введите *контактный телефон* склада:", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_contact_phone)

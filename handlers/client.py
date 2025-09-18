@@ -223,7 +223,7 @@ async def cb_my_orders(call: CallbackQuery, buyer_order_manager) -> None:
 
 
 @client_router.callback_query(F.data == "back-main")
-async def cb_back_main(call: CallbackQuery, buyer_info_manager):
+async def cb_back_main(call: CallbackQuery, state: FSMContext, buyer_info_manager):
     await call.answer()
     is_admin = call.from_user.id in get_admin_ids()
     bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
@@ -234,6 +234,7 @@ async def cb_back_main(call: CallbackQuery, buyer_info_manager):
             parse_mode="Markdown",
             reply_markup=get_main_inline_keyboard(is_admin),
         )
+        await state.clear()
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
         await handle_telegram_error(e, call=call)
@@ -637,10 +638,6 @@ async def handle_address_source_choice(
             await call.message.answer("У вас нет сохраненного адреса. Пожалуйста, введите его вручную.")
             await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
             return
-
-        # --- НОВАЯ ЛОГИКА ---
-        # Мы получили сохраненный адрес. Теперь делаем то же,
-        # что и в хендлере для текстового ввода.
 
         await call.message.edit_text("⏳ Ищу сохраненный адрес на карте...")
 

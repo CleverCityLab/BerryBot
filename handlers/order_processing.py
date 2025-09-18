@@ -4,6 +4,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Union, Tuple
 
+import aiohttp
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -261,7 +262,7 @@ async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_i
     else:
         # Если доставка, запускаем процесс ввода адреса
         await call.message.edit_text(
-            "Введите адрес доставки (город, улица, дом) или сразу отправьте геоточку."
+            "Введите адрес доставки (город, улица, дом)"
         )
         await state.set_state(CreateOrder.enter_address)
 
@@ -290,7 +291,7 @@ async def process_text_address(msg: Message, state: FSMContext, bot: Bot):
 
     coords = await geocode_address(address_text)
     if not coords:
-        await msg.answer("Не удалось найти такой адрес. Попробуйте ввести его подробнее или отправьте геоточку.")
+        await msg.answer("Не удалось найти такой адрес. Попробуйте ввести его подробнее")
         return
 
     lon, lat = coords
@@ -305,13 +306,11 @@ async def process_text_address(msg: Message, state: FSMContext, bot: Bot):
 
 
 # --- Шаг 3.3: Пользователь отправляет геолокацию (на первом или втором шаге) ---
-@client_router.message(CreateOrder.enter_address, F.location)
 @client_router.message(CreateOrder.confirm_geoposition, F.location)
 async def process_manual_location(msg: Message, state: FSMContext):
     await state.update_data(
         latitude=msg.location.latitude,
         longitude=msg.location.longitude,
-        address=f"Геометка ({msg.location.latitude:.5f}, {msg.location.longitude:.5f})"
     )
     await state.set_state(CreateOrder.enter_porch)
     await msg.answer("Точка принята! Теперь введите **подъезд** (или отправьте прочерк `-`):", parse_mode="Markdown")
@@ -333,10 +332,6 @@ async def process_geoposition_confirm(call: CallbackQuery, state: FSMContext):
         await call.message.answer("Отлично! Теперь введите **подъезд** (или отправьте прочерк `-`):",
                                   parse_mode="Markdown")
         return
-
-    if action == "manual":
-        await call.message.answer("Хорошо, пожалуйста, отправьте мне геолокацию (Скрепка 📎 -> Геопозиция).")
-        # Состояние остается confirm_geoposition, ждем локацию
 
 
 # --- Шаг 3.5: Кнопка "Назад" с экрана подтверждения геопозиции ---

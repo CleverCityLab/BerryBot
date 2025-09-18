@@ -224,7 +224,6 @@ def confirm_geoposition_kb() -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Да, все верно", callback_data="geo:confirm")
-    builder.button(text="📍 Указать вручную", callback_data="geo:manual")
     builder.button(text="⬅️ Назад", callback_data="cart:back")
     builder.adjust(2, 1)
     return builder.as_markup()
