@@ -253,3 +253,9 @@ def admin_confirm_delete_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     builder.button(text="⬅️ Нет, назад", callback_data="admin:manage")
     builder.adjust(1)
     return builder.as_markup()
+
+def admin_manage_add_back_kb() -> InlineKeyboardMarkup:
+    """Клавиатура с кнопкой "Назад" для меню добавления администратора."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ Назад", callback_data="admin:manage")
+    return builder.as_markup()

@@ -1,6 +1,6 @@
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -300,7 +300,7 @@ async def on_orders_page(call: CallbackQuery, buyer_order_manager):
         await handle_telegram_error(e, call=call)
 
 
-@client_router.callback_query(F.data.startswith("order:"))
+@client_router.callback_query(F.data.startswith("order:"), StateFilter(None))
 async def order_detail(call: CallbackQuery, buyer_order_manager, *, delivery_status_text: str | None = None):
     """
     Показывает детали заказа. Может принимать дополнительный текст о статусе доставки.

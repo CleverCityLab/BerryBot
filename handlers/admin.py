@@ -20,7 +20,9 @@ from keyboards.admin import (admin_positions_list,
                              admin_order_detail_kb,
                              admin_cancel_confirm_kb, notify_cancel_kb,
                              notify_confirm_kb, admin_warehouse_detail_kb,
-                             admin_create_warehouse_kb, admin_manage_admins_kb, admin_confirm_delete_admin_kb
+                             admin_create_warehouse_kb, admin_manage_admins_kb,
+                             admin_confirm_delete_admin_kb,
+                             admin_manage_add_back_kb
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
@@ -1317,7 +1319,9 @@ async def start_add_admin(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminManagement.waiting_for_user_id)
     await call.message.edit_text(
         "Пришлите **Telegram User ID** нового администратора.\n\n"
-        "_Чтобы узнать ID пользователя, попросите его переслать вам любое сообщение от бота @userinfobot._"
+        "_Чтобы узнать ID пользователя, попросите его переслать вам сообщение от бота @userinfobot. Бот скажет id_",
+        parse_mode="Markdown",
+        reply_markup=admin_manage_add_back_kb() # <-- ДОБАВЛЕНО
     )
     await call.answer()
 
