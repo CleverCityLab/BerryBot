@@ -110,6 +110,7 @@ class WarehouseCreate(StatesGroup):
     waiting_for_contact_name = State()
     waiting_for_contact_phone = State()
 
+
 class AdminManagement(StatesGroup):
     waiting_for_user_id = State()
 
@@ -1321,7 +1322,7 @@ async def start_add_admin(call: CallbackQuery, state: FSMContext):
         "Пришлите **Telegram User ID** нового администратора.\n\n"
         "_Чтобы узнать ID пользователя, попросите его переслать вам сообщение от бота @userinfobot. Бот скажет id_",
         parse_mode="Markdown",
-        reply_markup=admin_manage_add_back_kb() # <-- ДОБАВЛЕНО
+        reply_markup=admin_manage_add_back_kb()  # <-- ДОБАВЛЕНО
     )
     await call.answer()
 

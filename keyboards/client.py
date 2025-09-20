@@ -178,7 +178,7 @@ def delivery_address_select(saved: str | None) -> InlineKeyboardMarkup:
 def confirm_create_order(bonuses: int,
                          used_bonus: int,
                          total_sum: float,
-                         has_comment: bool)-> InlineKeyboardMarkup:
+                         has_comment: bool) -> InlineKeyboardMarkup:
     """
     Создает клавиатуру для финального подтверждения заказа.
     :param bonuses: Всего доступно бонусов у пользователя.
@@ -217,7 +217,7 @@ def confirm_create_order(bonuses: int,
             )
 
     # Располагаем кнопки: 2 в первой строке, 1 (если есть) во второй.
-    builder.adjust(1,2, 1)
+    builder.adjust(1, 2, 1)
 
     return builder.as_markup()
 

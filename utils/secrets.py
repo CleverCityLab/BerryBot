@@ -10,6 +10,7 @@ log = logging.getLogger(__name__)
 
 SECRETS_JSON_PATH = os.path.join(os.path.dirname(__file__), '../secrets.json')
 
+
 def _load_secrets() -> dict:
     try:
         with open(SECRETS_JSON_PATH, 'r', encoding='utf-8') as f:
@@ -18,15 +19,18 @@ def _load_secrets() -> dict:
         # Если файл не найден или пуст, возвращаем пустую структуру
         return {"ADMIN_IDS": []}
 
+
 def _save_secrets(data: dict) -> None:
     with open(SECRETS_JSON_PATH, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def get_admin_ids() -> list[int]:
     with file_lock:
         secrets = _load_secrets()
         # Убедимся, что возвращаем список целых чисел
         return [int(admin_id) for admin_id in secrets.get('ADMIN_IDS', [])]
+
 
 def add_admin_id(user_id: int) -> bool:
     """Добавляет ID нового администратора. Возвращает True, если ID был добавлен."""
@@ -41,6 +45,7 @@ def add_admin_id(user_id: int) -> bool:
             return True
         log.warning(f"Попытка добавить существующего администратора с ID {user_id}.")
         return False
+
 
 def remove_admin_id(user_id: int) -> bool:
     """Удаляет ID администратора. Возвращает True, если ID был удален."""

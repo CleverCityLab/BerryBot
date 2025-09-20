@@ -195,7 +195,7 @@ async def create_yandex_delivery_claim(
         client_info=client_info,  # <-- Теперь это client_info
         warehouse_info=warehouse,
         order_id=order_id,  # <-- Теперь это order_id
-        order_comment = order.comment
+        order_comment=order.comment
     )
 
     if claim_id:
@@ -517,19 +517,21 @@ async def confirm_bonus(call: CallbackQuery, state: FSMContext):
     # Редактируем сообщение с новыми данными
     await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
+
 @client_router.callback_query(CreateOrder.confirm_order, F.data == "order:add_comment")
 async def start_add_comment(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text("Введите ваш комментарий к заказу (например, 'позвонить за час до доставки'):")
     await state.set_state(CreateOrder.enter_comment)
     await call.answer()
 
+
 # Этот хендлер ловит сам текст комментария
 @client_router.message(CreateOrder.enter_comment, F.text)
 async def process_comment(
-    msg: Message,
-    state: FSMContext,
-    buyer_info_manager: BuyerInfoManager,
-    product_position_manager: ProductPositionManager
+        msg: Message,
+        state: FSMContext,
+        buyer_info_manager: BuyerInfoManager,
+        product_position_manager: ProductPositionManager
 ):
     await state.update_data(comment=msg.text.strip())
     await msg.answer("Комментарий добавлен.")

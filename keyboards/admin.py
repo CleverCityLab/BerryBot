@@ -254,6 +254,7 @@ def admin_confirm_delete_admin_kb(user_id: int) -> InlineKeyboardMarkup:
     builder.adjust(1)
     return builder.as_markup()
 
+
 def admin_manage_add_back_kb() -> InlineKeyboardMarkup:
     """Клавиатура с кнопкой "Назад" для меню добавления администратора."""
     builder = InlineKeyboardBuilder()

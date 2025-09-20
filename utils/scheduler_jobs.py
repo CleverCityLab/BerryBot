@@ -45,7 +45,8 @@ async def check_delivery_statuses(
             if was_updated:
                 synced_count += 1
                 log.info(
-                    f"Статус заказа #{order_id} был автоматически синхронизирован. Новый статус в Яндексе: {yandex_status}.")
+                    f"Статус заказа #{order_id} был автоматически синхронизирован."
+                    f" Новый статус в Яндексе: {yandex_status}.")
 
         except Exception as e:
             log.exception(f"Ошибка при синхронизации статуса для заказа #{order_id} (claim_id: {claim_id}): {e}")
