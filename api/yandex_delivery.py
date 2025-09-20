@@ -177,7 +177,8 @@ class YandexDeliveryClient:
             items: List[Dict[str, Any]],  # Ожидаем ПОЛНЫЙ список товаров
             client_info: Dict[str, Any],  # Ожидаем ПОЛНЫЙ словарь клиента
             warehouse_info: Dict[str, Any],
-            order_id: int
+            order_id: int,
+            order_comment: Optional[str] = None
     ) -> Optional[str]:
         """
         Создаёт черновик заявки на доставку (/b2b/cargo/integration/v2/claims/create).
@@ -217,6 +218,9 @@ class YandexDeliveryClient:
         if client_info.get("apartment"):
             destination_address["sflat"] = client_info["apartment"]
 
+        base_comment = f"Доставка заказа #{order_id} из Telegram-бота."
+        full_comment = f"Комментарий клиента: {order_comment}. {base_comment}" if order_comment else base_comment
+
         # --- 4. Формируем финальный, правильный payload ---
         payload = {
             "items": items,
@@ -245,7 +249,7 @@ class YandexDeliveryClient:
             ],
             "client_requirements": {"taxi_class": "express"},
             # Добавляем другие полезные поля, как в продвинутой версии
-            "comment": f"Доставка заказа #{order_id} из Telegram-бота",
+            "comment": full_comment,
         }
 
         # Добавляем request_id как query-параметр, а не в тело

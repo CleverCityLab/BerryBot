@@ -6,6 +6,8 @@ from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
 from api.yandex_delivery import YandexDeliveryClient
 from database.async_db import AsyncDatabase
 from database.managers.buyer_info_manager import BuyerInfoManager
@@ -19,6 +21,7 @@ from utils.config import (
     BOT_TOKEN, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
     DB_MIN_POOL_SIZE, DB_MAX_POOL_SIZE, YANDEX_DELIVERY_TOKEN
 )
+from utils.scheduler_jobs import check_delivery_statuses
 
 from middleware.manager_middleware import ManagerMiddleware
 from handlers import register_handlers
@@ -50,7 +53,7 @@ async def shutdown(bot: Bot, dp: Dispatcher):
 
 async def main():
     log.info("[Bot] Запуск основного процесса")
-
+    PENDING_ORDER_TIMEOUT_MINUTES = 10  # Заказы будут отменяться через 15 минут
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     yandex_delivery_client = YandexDeliveryClient(token=YANDEX_DELIVERY_TOKEN)
@@ -73,6 +76,26 @@ async def main():
     product_position_manager = ProductPositionManager(db)
     user_info_manager = UserInfoManager(db)
     warehouse_manager = WarehouseManager(db)
+
+    # --- БЛОК НАСТРОЙКИ ПЛАНИРОВЩИКА ---
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")  # Укажите ваш часовой пояс
+
+    # Задача 1: Отмена неоплаченных заказов
+    scheduler.add_job(
+        buyer_order_manager.cancel_old_pending_orders,
+        trigger="interval",
+        minutes=5,
+        args=[PENDING_ORDER_TIMEOUT_MINUTES]
+    )
+
+    # Задача 2: Синхронизация статусов доставки <-- ДОБАВЛЕНО
+    scheduler.add_job(
+        check_delivery_statuses,
+        trigger="interval",
+        minutes=10,  # Проверять каждые 10 минут
+        args=[buyer_order_manager, yandex_delivery_client]
+    )
+    # --- КОНЕЦ БЛОКА ---
 
     dp.update.middleware(
         ManagerMiddleware(

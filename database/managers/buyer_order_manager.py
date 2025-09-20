@@ -120,7 +120,8 @@ class BuyerOrderManager:
             delivery_way: str,
             address: Optional[str],
             used_bonus: int,
-            delivery_cost: float = 0.0  # <-- НОВЫЙ АРГУМЕНТ
+            delivery_cost: float = 0.0,
+            comment: Optional[str] = None
     ) -> tuple[Optional[int], str | None]:
         """
         Проверяем склад, создаём заказ со статусом 'pending_payment',
@@ -184,11 +185,11 @@ class BuyerOrderManager:
                 order_id = await conn.fetchval(
                     """
                     INSERT INTO buyer_orders (buyer_id, status, delivery_way,
-                     delivery_address, used_bonus, registration_date, delivery_date, delivery_cost)
+                     delivery_address, used_bonus, registration_date, delivery_date, delivery_cost, comment)
                     VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6)
                     RETURNING id
                     """,
-                    uid, delivery_way, address, used_bonus, delivery_date, delivery_cost
+                    uid, delivery_way, address, used_bonus, delivery_date, delivery_cost, comment
                 )
 
                 # 6) вставляем позиции и уменьшаем склад
@@ -315,6 +316,7 @@ class BuyerOrderManager:
         head = await self.db.fetchrow("""
                                       SELECT o.id,
                                              o.status,
+                                             o.comment,
                                              o.delivery_way,
                                              o.registration_date,
                                              o.delivery_date,
@@ -422,3 +424,48 @@ class BuyerOrderManager:
             return True
 
         return False
+
+    async def get_active_yandex_deliveries(self) -> list[dict]:
+        """
+        Возвращает список активных заказов с доставкой через Яндекс,
+        которые нужно проверить.
+        """
+        # Ищем заказы в статусах 'processing' или 'transferring', у которых есть claim_id
+        sql = """
+            SELECT id, yandex_claim_id
+            FROM buyer_orders
+            WHERE status IN ('processing', 'transferring')
+              AND yandex_claim_id IS NOT NULL;
+        """
+        records = await self.db.fetch(sql)
+        return [dict(r) for r in records]
+
+    async def cancel_old_pending_orders(self, timeout_minutes: int) -> list[int]:
+        """
+        Находит и отменяет заказы, которые "зависли" в статусе pending_payment.
+        Возвращает список ID отмененных заказов.
+        """
+        sql = """
+            SELECT id
+            FROM buyer_orders
+            WHERE status = 'pending_payment'
+              AND created_at < NOW() - MAKE_INTERVAL(mins => $1);
+        """
+        stale_orders = await self.db.fetch(sql, timeout_minutes)
+        if not stale_orders:
+            return []
+
+        order_ids = [r['id'] for r in stale_orders]
+        log.info(f"Найдено {len(order_ids)} просроченных заказов для отмены: {order_ids}")
+
+        cancelled_ids = []
+        for order_id in order_ids:
+            try:
+                # Используем существующий метод, который возвращает товары и бонусы
+                was_cancelled = await self.cancel_order(order_id)
+                if was_cancelled:
+                    cancelled_ids.append(order_id)
+            except Exception as e:
+                log.exception(f"Ошибка при автоматической отмене заказа #{order_id}: {e}")
+
+        return cancelled_ids

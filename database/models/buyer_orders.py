@@ -42,6 +42,7 @@ class BuyerOrders:
     yandex_claim_id: Optional[str]
     payment_info: Optional[dict]  # JSONB можно представить как dict
     payment_date: Optional[datetime]  # TIMESTAMP WITH TIME ZONE - это datetime
+    comment: Optional[str]
 
     @classmethod
     def from_record(cls, record: asyncpg.Record) -> Optional["BuyerOrders"]:
@@ -71,4 +72,5 @@ class BuyerOrders:
             yandex_claim_id=record.get("yandex_claim_id"),
             payment_info=record.get("payment_info"),
             payment_date=record.get("payment_date"),
+            comment=record.get("comment"),
         )

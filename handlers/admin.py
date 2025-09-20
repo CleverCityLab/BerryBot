@@ -20,7 +20,7 @@ from keyboards.admin import (admin_positions_list,
                              admin_order_detail_kb,
                              admin_cancel_confirm_kb, notify_cancel_kb,
                              notify_confirm_kb, admin_warehouse_detail_kb,
-                             admin_create_warehouse_kb
+                             admin_create_warehouse_kb, admin_manage_admins_kb, admin_confirm_delete_admin_kb
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
@@ -28,7 +28,7 @@ from utils.constants import status_map
 
 from utils.decorators import admin_only
 from utils.logger import get_logger
-from utils.secrets import get_admin_ids
+from utils.secrets import get_admin_ids, add_admin_id, remove_admin_id
 
 log = get_logger("[Bot.Admin]")
 
@@ -107,6 +107,9 @@ class WarehouseCreate(StatesGroup):
     waiting_for_apartment = State()
     waiting_for_contact_name = State()
     waiting_for_contact_phone = State()
+
+class AdminManagement(StatesGroup):
+    waiting_for_user_id = State()
 
 
 def format_product_info(pos: dict) -> str:
@@ -556,12 +559,17 @@ def _order_detail_text(o: dict) -> str:
     is_finished = o["status"] in ("finished", "cancelled")
     header = "*Заказ (завершённый)*" if is_finished else "*Заказ (активный)*"
 
+    comment_text = ""
+    if o.get("comment"):
+        comment_text = f"\n*Комментарий клиента:*\n_{o['comment']}_\n"
+
     status_txt = status_map.get(o['status'], o['status'])
 
     text = (
         f"{header}\n\n"
         f"*Имя фамилия:* {o['name_surname']}\n"
         f"*Номер:* {o['tel_num']}\n\n"
+        f"*Комментарий:* {comment_text}\n"
         f"*Товары:*\n{items}\n\n"
         f"*Цена:* `{total} ₽`\n"
         f"*Списано бонусов:* `{used} ₽`\n"
@@ -1214,3 +1222,127 @@ async def process_create_warehouse_contact_phone_and_save(msg: Message, state: F
     text = format_warehouse_info(new_warehouse_data)  # <-- Нужно будет обновить и эту функцию
     kb = admin_warehouse_detail_kb(new_warehouse_id)  # <-- И эту клавиатуру
     await msg.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def get_admin_list_text_and_data(bot: Bot) -> tuple[str, list[dict]]:
+    """Вспомогательная функция для получения списка админов и текста для сообщения."""
+    admin_ids = get_admin_ids()
+    admin_data = []
+    text_lines = ["*Текущие администраторы:*"]
+
+    if not admin_ids:
+        text_lines.append("\n_Список пуст._")
+    else:
+        for admin_id in admin_ids:
+            try:
+                # Пытаемся получить информацию о пользователе, чтобы показать имя
+                chat = await bot.get_chat(admin_id)
+                full_name = chat.full_name
+                username = f"(@{chat.username})" if chat.username else ""
+                text_lines.append(f"• {full_name} {username} - `ID: {admin_id}`")
+                admin_data.append({"id": admin_id, "full_name": full_name})
+            except TelegramBadRequest:
+                # Если не удалось получить инфо (например, юзер удалил аккаунт), показываем только ID
+                text_lines.append(f"• Пользователь с `ID: {admin_id}` (недоступен)")
+                admin_data.append({"id": admin_id, "full_name": f"ID {admin_id}"})
+
+    text_lines.append("\nВы можете добавить нового администратора по его Telegram User ID или удалить существующего.")
+    return "\n".join(text_lines), admin_data
+
+
+@admin_router.callback_query(F.data == "admin:manage")
+@admin_only
+async def show_admin_management_menu(call: CallbackQuery, bot: Bot):
+    """Показывает меню управления администраторами."""
+    text, admin_data = await get_admin_list_text_and_data(bot)
+    await call.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=admin_manage_admins_kb(admin_data)
+    )
+    await call.answer()
+
+
+@admin_router.callback_query(F.data == "admin:manage:add")
+@admin_only
+async def start_add_admin(call: CallbackQuery, state: FSMContext):
+    """Начинает процесс добавления нового администратора."""
+    await state.set_state(AdminManagement.waiting_for_user_id)
+    await call.message.edit_text(
+        "Пришлите **Telegram User ID** нового администратора.\n\n"
+        "_Чтобы узнать ID пользователя, попросите его переслать вам любое сообщение от бота @userinfobot._"
+    )
+    await call.answer()
+
+
+@admin_router.message(AdminManagement.waiting_for_user_id)
+@admin_only
+async def process_add_admin_id(msg: Message, state: FSMContext, bot: Bot):
+    """Обрабатывает введенный ID и добавляет нового администратора."""
+    try:
+        new_admin_id = int(msg.text.strip())
+    except ValueError:
+        await msg.answer("ID должен быть числом. Попробуйте еще раз.")
+        return
+
+    if add_admin_id(new_admin_id):
+        await msg.answer(f"✅ Администратор с ID `{new_admin_id}` успешно добавлен.")
+    else:
+        await msg.answer(f"⚠️ Администратор с ID `{new_admin_id}` уже был в списке.")
+
+    await state.clear()
+
+    # Обновляем и показываем меню с новым списком
+    text, admin_data = await get_admin_list_text_and_data(bot)
+    await msg.answer(
+        text,
+        parse_mode="Markdown",
+        reply_markup=admin_manage_admins_kb(admin_data)
+    )
+
+
+@admin_router.callback_query(F.data.startswith("admin:manage:delete:"))
+@admin_only
+async def confirm_delete_admin(call: CallbackQuery):
+    """Запрашивает подтверждение на удаление администратора."""
+    try:
+        user_id_to_delete = int(call.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await call.answer("Ошибка в данных.", show_alert=True)
+        return
+
+    # Защита от случайного удаления самого себя
+    if call.from_user.id == user_id_to_delete:
+        await call.answer("Вы не можете удалить самого себя.", show_alert=True)
+        return
+
+    await call.message.edit_text(
+        f"Вы уверены, что хотите удалить администратора с ID `{user_id_to_delete}` из списка?",
+        parse_mode="Markdown",
+        reply_markup=admin_confirm_delete_admin_kb(user_id_to_delete)
+    )
+    await call.answer()
+
+
+@admin_router.callback_query(F.data.startswith("admin:manage:delete_confirm:"))
+@admin_only
+async def process_delete_admin(call: CallbackQuery, bot: Bot):
+    """Обрабатывает подтверждение и удаляет администратора."""
+    try:
+        user_id_to_delete = int(call.data.split(":")[-1])
+    except (ValueError, IndexError):
+        await call.answer("Ошибка в данных.", show_alert=True)
+        return
+
+    if remove_admin_id(user_id_to_delete):
+        await call.answer(f"Администратор с ID {user_id_to_delete} удален.", show_alert=True)
+    else:
+        await call.answer("Этого администратора уже нет в списке.", show_alert=True)
+
+    # Обновляем и показываем меню
+    text, admin_data = await get_admin_list_text_and_data(bot)
+    await call.message.edit_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=admin_manage_admins_kb(admin_data)
+    )

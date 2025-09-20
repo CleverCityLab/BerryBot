@@ -44,6 +44,7 @@ class CreateOrder(StatesGroup):
     enter_porch = State()
     enter_floor = State()
     enter_apartment = State()
+    enter_comment = State()
     confirm_order = State()
     waiting_payment = State()
 
@@ -54,7 +55,8 @@ class CreateOrder(StatesGroup):
 
 def _text_order_preview(
         items: list[dict], total_goods: int, delivery_way: str,
-        address: Union[str, None] = None, delivery_cost: float = 0.0, used_bonus: int = 0
+        address: Union[str, None] = None, delivery_cost: float = 0.0, used_bonus: int = 0,
+        comment: Union[str, None] = None
 ) -> str:
     """Формирует текст для финального подтверждения заказа."""
     lines = ["*Ваш заказ:*"]
@@ -66,6 +68,9 @@ def _text_order_preview(
     if delivery_way == "delivery":
         lines.append(f"Доставка по адресу: _{address}_")
         lines.append(f"Стоимость доставки: *{delivery_cost:.2f} ₽*")
+
+    if comment:
+        lines.append(f"\nКомментарий: _{comment}_")
 
     final_total = total_goods + delivery_cost
     if used_bonus > 0:
@@ -82,6 +87,7 @@ async def go_confirm(target: Message | CallbackQuery, state: FSMContext, buyer_i
     delivery_way = data.get("delivery_way")
     address = data.get("address")
     delivery_cost = data.get("delivery_cost", 0.0) if delivery_way == "delivery" else 0.0
+    comment = data.get("comment")
 
     products = await product_position_manager.get_order_position_by_ids(list(cart.keys()))
     items = [{"title": p["title"], "price": p["price"], "qty": cart.get(p['id'], 0)} for p in products]
@@ -92,9 +98,9 @@ async def go_confirm(target: Message | CallbackQuery, state: FSMContext, buyer_i
     await state.update_data(total_goods=total_goods, bonuses=bonuses, items_preview=items)
 
     # Сначала показываем предпросмотр без списания бонусов
-    text = _text_order_preview(items, total_goods, delivery_way, address, delivery_cost, used_bonus=0)
+    text = _text_order_preview(items, total_goods, delivery_way, address, delivery_cost, used_bonus=0, comment=comment)
     full_price = total_goods + delivery_cost
-    kb = confirm_create_order(bonuses, used_bonus=0, total_sum=full_price)
+    kb = confirm_create_order(bonuses, 0, full_price, has_comment=bool(comment))
 
     message = target if isinstance(target, Message) else target.message
     # Удаляем предыдущее сообщение и отправляем новое, чтобы избежать путаницы
@@ -188,7 +194,8 @@ async def create_yandex_delivery_claim(
         items=items_for_api,
         client_info=client_info,  # <-- Теперь это client_info
         warehouse_info=warehouse,
-        order_id=order_id  # <-- Теперь это order_id
+        order_id=order_id,  # <-- Теперь это order_id
+        order_comment = order.comment
     )
 
     if claim_id:
@@ -510,6 +517,25 @@ async def confirm_bonus(call: CallbackQuery, state: FSMContext):
     # Редактируем сообщение с новыми данными
     await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
+@client_router.callback_query(CreateOrder.confirm_order, F.data == "order:add_comment")
+async def start_add_comment(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("Введите ваш комментарий к заказу (например, 'позвонить за час до доставки'):")
+    await state.set_state(CreateOrder.enter_comment)
+    await call.answer()
+
+# Этот хендлер ловит сам текст комментария
+@client_router.message(CreateOrder.enter_comment, F.text)
+async def process_comment(
+    msg: Message,
+    state: FSMContext,
+    buyer_info_manager: BuyerInfoManager,
+    product_position_manager: ProductPositionManager
+):
+    await state.update_data(comment=msg.text.strip())
+    await msg.answer("Комментарий добавлен.")
+    # Возвращаем пользователя на экран подтверждения
+    await go_confirm(msg, state, buyer_info_manager, product_position_manager)
+
 
 @client_router.callback_query(CreateOrder.confirm_order, F.data == "confirm:restart")
 async def confirm_restart(call: CallbackQuery, state: FSMContext, product_position_manager):
@@ -540,6 +566,7 @@ async def confirm_ok(
     used_bonus = data.get("used_bonus", 0)
     total_goods = data.get("total_goods", 0)
     delivery_cost = data.get("delivery_cost", 0.0)
+    comment = data.get("comment")
 
     # Рассчитываем итоговую сумму, которую нужно оплатить деньгами
     final_amount_to_pay = total_goods + delivery_cost - used_bonus
@@ -551,7 +578,8 @@ async def confirm_ok(
         delivery_way=delivery_way,
         address=address,
         used_bonus=used_bonus,
-        delivery_cost=delivery_cost
+        delivery_cost=delivery_cost,
+        comment=comment
     )
     if not order_id:
         await call.message.edit_text(err or "Не удалось создать заказ. Попробуйте снова.")

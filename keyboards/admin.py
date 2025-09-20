@@ -161,3 +161,31 @@ def admin_create_warehouse_kb() -> InlineKeyboardMarkup:
     builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")
     builder.adjust(1)
     return builder.as_markup()
+
+
+def admin_manage_admins_kb(admins: list[dict]) -> InlineKeyboardMarkup:
+    """Клавиатура для управления списком администраторов."""
+    builder = InlineKeyboardBuilder()
+
+    # Создаем кнопки для удаления каждого админа
+    for admin in admins:
+        builder.button(
+            text=f"❌ Удалить {admin['full_name']} ({admin['id']})",
+            callback_data=f"admin:manage:delete:{admin['id']}"
+        )
+
+    # Кнопки для основных действий
+    builder.button(text="➕ Добавить администратора", callback_data="admin:manage:add")
+    builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")
+
+    builder.adjust(1)  # Каждая кнопка на новой строке
+    return builder.as_markup()
+
+
+def admin_confirm_delete_admin_kb(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для подтверждения удаления администратора."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, я уверен", callback_data=f"admin:manage:delete_confirm:{user_id}")
+    builder.button(text="⬅️ Нет, назад", callback_data="admin:manage")
+    builder.adjust(1)
+    return builder.as_markup()

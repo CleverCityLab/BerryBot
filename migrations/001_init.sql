@@ -84,6 +84,7 @@ CREATE TABLE buyer_orders
     buyer_id          BIGINT       NOT NULL REFERENCES user_info (id)
         ON UPDATE CASCADE ON DELETE CASCADE,
     status            order_status NOT NULL DEFAULT 'waiting',
+    comment           TEXT,
     delivery_way      delivery_way NOT NULL DEFAULT 'pickup',
     delivery_address  TEXT,
     used_bonus        INT          NOT NULL DEFAULT 0,

@@ -18,6 +18,7 @@ def get_main_inline_keyboard(is_admin: bool):
             [InlineKeyboardButton(text="Заказы", callback_data="orders")],
             [InlineKeyboardButton(text="Отправить уведомление покупателям", callback_data="send-notification")],
             [InlineKeyboardButton(text="Настройки доставки", callback_data="delivery-settings")],
+            [InlineKeyboardButton(text="Управление админами", callback_data="admin:manage")],
         ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -145,7 +146,10 @@ def delivery_address_select(saved: str | None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def confirm_create_order(bonuses: int, used_bonus: int, total_sum: float) -> InlineKeyboardMarkup:
+def confirm_create_order(bonuses: int,
+                         used_bonus: int,
+                         total_sum: float,
+                         has_comment: bool)-> InlineKeyboardMarkup:
     """
     Создает клавиатуру для финального подтверждения заказа.
     :param bonuses: Всего доступно бонусов у пользователя.
@@ -153,6 +157,9 @@ def confirm_create_order(bonuses: int, used_bonus: int, total_sum: float) -> Inl
     :param total_sum: Полная стоимость заказа (товары + доставка).
     """
     builder = InlineKeyboardBuilder()
+
+    comment_text = "📝 Изменить комментарий" if has_comment else "📝 Добавить комментарий"
+    builder.button(text=comment_text, callback_data="order:add_comment")
 
     # Основные кнопки: "Подтвердить" и "Начать заново"
     builder.button(
@@ -181,7 +188,7 @@ def confirm_create_order(bonuses: int, used_bonus: int, total_sum: float) -> Inl
             )
 
     # Располагаем кнопки: 2 в первой строке, 1 (если есть) во второй.
-    builder.adjust(2, 1)
+    builder.adjust(1,2, 1)
 
     return builder.as_markup()
 
