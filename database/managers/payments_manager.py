@@ -25,7 +25,7 @@ class PaymentsManager:
                       amount     = EXCLUDED.amount,
                       tg_user_id = EXCLUDED.tg_user_id,
                       order_id   = EXCLUDED.order_id
-              RETURNING id, tg_user_id, amount, yookassa_id, status, order_id; 
+              RETURNING id, tg_user_id, amount, yookassa_id, status, order_id;
               """
         rec = await self.db.fetchrow(sql, tg_user_id, amount, yookassa_id, status.value, order_id)
         return Payment.from_record(rec)
@@ -35,7 +35,7 @@ class PaymentsManager:
               UPDATE payments
               SET status = $2::payment_status
               WHERE yookassa_id = $1
-              RETURNING id, tg_user_id, amount, yookassa_id, status, order_id; \
+              RETURNING id, tg_user_id, amount, yookassa_id, status, order_id;
               """
         rec = await self.db.fetchrow(sql, yookassa_id, status.value)
         return Payment.from_record(rec) if rec else None
