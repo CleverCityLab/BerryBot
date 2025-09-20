@@ -11,6 +11,7 @@ from database.async_db import AsyncDatabase
 from database.managers.buyer_info_manager import BuyerInfoManager
 from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.order_items_manager import OrderItemsManager
+from database.managers.payments_manager import PaymentsManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.user_info_manager import UserInfoManager
 from database.managers.warehouse_manager import WarehouseManager
@@ -73,6 +74,7 @@ async def main():
     product_position_manager = ProductPositionManager(db)
     user_info_manager = UserInfoManager(db)
     warehouse_manager = WarehouseManager(db)
+    payments_manager = PaymentsManager(db)
 
     dp.update.middleware(
         ManagerMiddleware(
@@ -83,6 +85,7 @@ async def main():
             product_position_manager=product_position_manager,
             user_info_manager=user_info_manager,
             warehouse_manager=warehouse_manager,
+            payments_manager=payments_manager,
             bot=bot,
             yandex_delivery_client=yandex_delivery_client
         )
