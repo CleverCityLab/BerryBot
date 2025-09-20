@@ -114,9 +114,11 @@ def get_admin_orders_list_kb(
                                  callback_data=f"adm-orders:page:{status_token}:{prev_page}" if page > 1 else "noop"),
             InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"),
             InlineKeyboardButton(text="›",
-                                 callback_data=f"adm-orders:page:{status_token}:{next_page}" if page < total_pages else "noop"),
+                                 callback_data=f"adm-orders:page:{status_token}:{next_page}"
+                                 if page < total_pages else "noop"),
             InlineKeyboardButton(text="»",
-                                 callback_data=f"adm-orders:page:{status_token}:{total_pages}" if page < total_pages else "noop"),
+                                 callback_data=f"adm-orders:page:{status_token}:{total_pages}"
+                                 if page < total_pages else "noop"),
         ])
 
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm-orders:menu")])

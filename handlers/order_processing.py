@@ -1,10 +1,8 @@
-# handlers/order_processing.py
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Union, Tuple
 
-import aiohttp
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
