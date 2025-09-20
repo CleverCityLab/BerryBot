@@ -139,13 +139,37 @@ async def back_admin_main(call: CallbackQuery):
 
 @admin_router.callback_query(F.data == "positions")
 @admin_only
-async def adm_positions(call: CallbackQuery, product_position_manager):
+async def adm_positions_root(call: CallbackQuery, product_position_manager):
     items = await product_position_manager.list_all_order_positions()
+    kb = admin_positions_list(items, page=1)
     try:
-        await call.message.edit_text("Текущие позиции:", reply_markup=admin_positions_list(items))
+        await call.message.edit_text(
+            f"Текущие позиции (всего {len(items)}):",
+            reply_markup=kb
+        )
         await call.answer()
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
+        await handle_telegram_error(e, call=call)
+        return
+
+
+@admin_router.callback_query(F.data.startswith("positions:page:"))
+@admin_only
+async def adm_positions_page(call: CallbackQuery, product_position_manager):
+    try:
+        page = int(call.data.split(":")[-1])
+    except ValueError:
+        page = 1
+
+    items = await product_position_manager.list_all_order_positions()
+    kb = admin_positions_list(items, page=page)
+
+    try:
+        await call.message.edit_reply_markup(reply_markup=kb)
+        await call.answer()
+    except TelegramBadRequest as e:
+        log.error(f"[Bot.Client] Ошибка при изменении сообщения (pagin): {e}")
         await handle_telegram_error(e, call=call)
         return
 
@@ -617,6 +641,7 @@ async def adm_orders_menu_again(call: CallbackQuery, buyer_order_manager):
 async def adm_orders_list(call: CallbackQuery, buyer_order_manager):
     finished = call.data.endswith("finished")
     orders = await buyer_order_manager.admin_list_orders(finished=finished)
+
     header = (
         f"Кол-во ожидаемых заказов: `{len(orders)}`"
         if not finished else
@@ -627,8 +652,30 @@ async def adm_orders_list(call: CallbackQuery, buyer_order_manager):
         await call.message.edit_text(
             header,
             parse_mode="Markdown",
-            reply_markup=get_admin_orders_list_kb(orders, finished),
+            reply_markup=get_admin_orders_list_kb(orders, finished, page=1),
         )
+        await call.answer()
+    except TelegramBadRequest as e:
+        log.error(e)
+        await handle_telegram_error(e, call=call)
+
+
+@admin_router.callback_query(F.data.startswith("adm-orders:page:"))
+@admin_only
+async def adm_orders_page(call: CallbackQuery, buyer_order_manager):
+    _, _, status_token, page_str = call.data.split(":")
+    finished = (status_token == "finished")
+    try:
+        page = int(page_str)
+    except ValueError:
+        page = 1
+
+    orders = await buyer_order_manager.admin_list_orders(finished=finished)
+    kb = get_admin_orders_list_kb(orders, finished, page=page)
+
+    try:
+        # меняем только клавиатуру (шапка со счетчиком остаётся прежней)
+        await call.message.edit_reply_markup(reply_markup=kb)
         await call.answer()
     except TelegramBadRequest as e:
         log.error(e)

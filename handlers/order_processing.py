@@ -1,10 +1,8 @@
-# handlers/order_processing.py
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Union, Tuple
 
-import aiohttp
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -15,8 +13,10 @@ from aiogram.types import Message, CallbackQuery, LabeledPrice, InlineKeyboardMa
 from api.yandex_delivery import YandexDeliveryClient, geocode_address
 from database.managers.buyer_info_manager import BuyerInfoManager
 from database.managers.buyer_order_manager import BuyerOrderManager
+from database.managers.payments_manager import PaymentsManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.warehouse_manager import WarehouseManager
+from database.models.payments import PaymentStatus
 from handlers.client import client_router
 from keyboards.client import (
     get_all_products, choice_of_delivery, delivery_address_select,
@@ -669,12 +669,36 @@ async def successful_payment_handler(
         buyer_order_manager: BuyerOrderManager,
         buyer_info_manager: BuyerInfoManager,
         warehouse_manager: WarehouseManager,
-        yandex_delivery_client: YandexDeliveryClient
+        yandex_delivery_client: YandexDeliveryClient,
+        payments_manager: PaymentsManager,
 ):
     order_id = int(message.successful_payment.invoice_payload.split(":")[1])
+    order_obj = await buyer_order_manager.get_order_by_id(order_id)
+
+    if not order_obj:
+        await message.answer("❗️Заказ не найден.")
+        await state.clear()
+        return
+
+    if order_obj.status.value != "pending_payment":
+        await message.answer("❗️Этот заказ уже обработан (оплачен или отменён).")
+        await state.clear()
+        return
+
+    amount_rub = message.successful_payment.total_amount / 100.0
+    yk_id = message.successful_payment.provider_payment_charge_id  # YooKassa id
+    tg_user_id = message.from_user.id
 
     # 1. Обновляем статус заказа в БД
     await buyer_order_manager.mark_order_as_paid(order_id, message.successful_payment)
+
+    await payments_manager.upsert_payment(
+        tg_user_id=tg_user_id,
+        amount=amount_rub,
+        yookassa_id=yk_id,
+        status=PaymentStatus.succeeded,
+        order_id=order_id,
+    )
 
     # 2. Отправляем короткое сообщение об успехе (без кнопок)
     await message.answer(f"✅ Оплата прошла! Ваш заказ №{order_id} принят в работу.")
@@ -723,6 +747,18 @@ async def cancel_payment_invoice(call: CallbackQuery, state: FSMContext, buyer_o
     Редактирует сообщение, превращая его в главное меню.
     """
     order_id = int(call.data.split(":")[1])
+    order_obj = await buyer_order_manager.get_order_by_id(order_id)
+
+    if not order_obj:
+        await call.answer("❗️Заказ не найден.", show_alert=True)
+        await state.clear()
+        return
+
+    if order_obj.status.value != "pending_payment":
+        await call.answer("❗️Этот заказ уже обработан (оплачен или отменён).", show_alert=True)
+        await state.clear()
+        return
+
     # Отменяем заказ в базе данных (возвращаем товары и бонусы)
     await buyer_order_manager.cancel_order(order_id)
     await call.answer("Заказ отменён", show_alert=True)
