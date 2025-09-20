@@ -32,14 +32,43 @@ def get_orders_inline_keyboard():
     )
 
 
-def get_orders_list_kb(orders: list, finished: bool):
+def get_orders_list_kb(
+        orders: list,
+        finished: bool,
+        page: int = 1,
+        page_size: int = 50,
+) -> InlineKeyboardMarkup:
+    total = len(orders)
+    total_pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, total_pages))  # clamp
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_orders = orders[start:end]
+
     suffix = "fin" if finished else "act"
-    kb = [
+
+    kb: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(
             text=f"#{o.id} ({o.registration_date:%d.%m})",  # TODO: подумать над отображением
             callback_data=f"order:{o.id}:{suffix}"
-        )] for o in orders
+        )]
+        for o in page_orders
     ]
+
+    if total_pages > 1:
+        prev_page = page - 1 if page > 1 else 1
+        next_page = page + 1 if page < total_pages else total_pages
+        kb.append([
+            InlineKeyboardButton(text="«", callback_data=f"orders:page:{suffix}:1" if page > 1 else "noop"),
+            InlineKeyboardButton(text="‹", callback_data=f"orders:page:{suffix}:{prev_page}" if page > 1 else "noop"),
+            InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"),
+            InlineKeyboardButton(text="›",
+                                 callback_data=f"orders:page:{suffix}:{next_page}" if page < total_pages else "noop"),
+            InlineKeyboardButton(text="»",
+                                 callback_data=f"orders:page:{suffix}:{total_pages}" if page < total_pages else "noop"),
+        ])
+
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"back-orders-menu:{suffix}")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
@@ -199,7 +228,7 @@ def cancel_payment(amount_to_pay: int, order_id: int) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 text=f"💳 Оплатить {amount_to_pay} RUB",
-                pay=True  # <-- Вот специальный флаг для кнопки оплаты
+                pay=True
             ),
             InlineKeyboardButton(
                 text="❌ Отменить",

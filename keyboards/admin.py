@@ -1,16 +1,46 @@
+from math import ceil
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from utils.statuses import S_WAITING, S_READY, S_TRANSFERRING, S_FINISHED, S_PROCESSING, S_CANCELLED
 
 
-def admin_positions_list(positions: list[dict]) -> InlineKeyboardMarkup:
-    rows = []
-    for p in positions:
+def admin_positions_list(
+        positions: list[dict],
+        page: int = 1,
+        page_size: int = 50,
+) -> InlineKeyboardMarkup:
+    total = len(positions)
+    total_pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_positions = positions[start:end]
+
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for p in page_positions:
         title = f"{p['title']} — {p['price']} руб, {p['quantity']} шт"
         rows.append([InlineKeyboardButton(text=title, callback_data=f"adm-pos:{p['id']}")])
-    rows.append([InlineKeyboardButton(text="Добавить", callback_data="adm-pos:add")])
+
+    if total_pages > 1:
+        prev_page = page - 1 if page > 1 else 1
+        next_page = page + 1 if page < total_pages else total_pages
+        rows.append([
+            InlineKeyboardButton(text="«", callback_data="positions:page:1" if page > 1 else "noop"),
+            InlineKeyboardButton(text="‹", callback_data=f"positions:page:{prev_page}" if page > 1 else "noop"),
+            InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"),
+            InlineKeyboardButton(text="›",
+                                 callback_data=f"positions:page:{next_page}" if page < total_pages else "noop"),
+            InlineKeyboardButton(text="»",
+                                 callback_data=f"positions:page:{total_pages}" if page < total_pages else "noop"),
+        ])
+
+    rows.append([InlineKeyboardButton(text="➕ Добавить", callback_data="adm-pos:add")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back-admin-main")])
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -48,15 +78,47 @@ def get_admin_orders_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def get_admin_orders_list_kb(orders: list[dict], finished: bool) -> InlineKeyboardMarkup:
+def get_admin_orders_list_kb(
+        orders: list[dict],
+        finished: bool,
+        page: int = 1,
+        page_size: int = 50,
+) -> InlineKeyboardMarkup:
+    total = len(orders)
+    total_pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, total_pages))  # clamp
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_orders = orders[start:end]
+
+    status_token = "finished" if finished else "active"
     suffix = "fin" if finished else "act"
-    rows = [
-        [InlineKeyboardButton(
-            text=f"#{o['id']} ({o['registration_date']:%d.%m})",
-            callback_data=f"adm-order:{o['id']}:{suffix}"
-        )]
-        for o in orders
+
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                text=f"#{o['id']} ({o['registration_date']:%d.%m})",
+                callback_data=f"adm-order:{o['id']}:{suffix}",
+            )
+        ]
+        for o in page_orders
     ]
+
+    if total_pages > 1:
+        prev_page = page - 1 if page > 1 else 1
+        next_page = page + 1 if page < total_pages else total_pages
+        rows.append([
+            InlineKeyboardButton(text="«", callback_data=f"adm-orders:page:{status_token}:1" if page > 1 else "noop"),
+            InlineKeyboardButton(text="‹",
+                                 callback_data=f"adm-orders:page:{status_token}:{prev_page}" if page > 1 else "noop"),
+            InlineKeyboardButton(text=f"{page}/{total_pages}", callback_data="noop"),
+            InlineKeyboardButton(text="›",
+                                 callback_data=f"adm-orders:page:{status_token}:{next_page}" if page < total_pages else "noop"),
+            InlineKeyboardButton(text="»",
+                                 callback_data=f"adm-orders:page:{status_token}:{total_pages}" if page < total_pages else "noop"),
+        ])
+
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="adm-orders:menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

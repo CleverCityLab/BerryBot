@@ -252,7 +252,7 @@ async def show_active_list(call: CallbackQuery, buyer_order_manager):
     try:
         await call.message.edit_text(
             text, parse_mode="Markdown",
-            reply_markup=get_orders_list_kb(orders, finished=False)
+            reply_markup=get_orders_list_kb(orders, finished=False, page=1)
         )
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
@@ -271,12 +271,33 @@ async def show_finished_list(call: CallbackQuery, buyer_order_manager):
     try:
         await call.message.edit_text(
             text, parse_mode="Markdown",
-            reply_markup=get_orders_list_kb(orders, finished=True)
+            reply_markup=get_orders_list_kb(orders, finished=True, page=1)
         )
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
         await handle_telegram_error(e, call=call)
         return
+
+
+@client_router.callback_query(F.data.startswith("orders:page:"))
+async def on_orders_page(call: CallbackQuery, buyer_order_manager):
+    _, _, suffix, page_str = call.data.split(":")
+    finished = (suffix == "fin")
+    try:
+        page = int(page_str)
+    except ValueError:
+        page = 1
+
+    tg = call.from_user.id
+    orders = await buyer_order_manager.list_orders(tg_user_id=tg, finished=finished)
+    kb = get_orders_list_kb(orders, finished=finished, page=page)
+
+    try:
+        await call.message.edit_reply_markup(reply_markup=kb)
+        await call.answer()
+    except TelegramBadRequest as e:
+        log.error(f"[Bot.Client] Ошибка при изменении клавиатуры: {e}")
+        await handle_telegram_error(e, call=call)
 
 
 @client_router.callback_query(F.data.startswith("order:"))
