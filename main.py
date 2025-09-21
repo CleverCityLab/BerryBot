@@ -5,6 +5,7 @@ import logging
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from api.yandex_delivery import YandexDeliveryClient
@@ -21,12 +22,10 @@ from utils.config import (
     BOT_TOKEN, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD,
     DB_MIN_POOL_SIZE, DB_MAX_POOL_SIZE, YANDEX_DELIVERY_TOKEN
 )
-from utils.scheduler_jobs import check_delivery_statuses, cleanup_stuck_orders
+from utils.scheduler_jobs import check_delivery_statuses
 
 from middleware.manager_middleware import ManagerMiddleware
 from handlers import register_handlers
-
-PENDING_ORDER_TIMEOUT_MINUTES = 15
 
 setup_logging(level=logging.DEBUG, log_to_file=True)
 log = get_logger("[Bot]")
@@ -34,12 +33,6 @@ log = get_logger("[Bot]")
 
 async def shutdown(bot: Bot, dp: Dispatcher):
     log.info("[Bot] Начало завершения работы бота и диспетчера")
-
-    # ИСПРАВЛЕНИЕ: Добавлена остановка планировщика
-    scheduler = dp.get("scheduler")
-    if scheduler and scheduler.running:
-        scheduler.shutdown()
-        log.debug("[Scheduler] Планировщик остановлен [✓]")
 
     for mw in dp.update.middleware._middlewares:
         if isinstance(mw, ManagerMiddleware) and hasattr(mw, 'yandex_delivery_client'):
@@ -61,13 +54,19 @@ async def shutdown(bot: Bot, dp: Dispatcher):
 
 async def main():
     log.info("[Bot] Запуск основного процесса")
+    PENDING_ORDER_TIMEOUT_MINUTES = 10  # Заказы будут отменяться через 15 минут
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     yandex_delivery_client = YandexDeliveryClient(token=YANDEX_DELIVERY_TOKEN)
 
     db = AsyncDatabase(
-        db_name=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT,
-        min_size=DB_MIN_POOL_SIZE, max_size=DB_MAX_POOL_SIZE,
+        db_name=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        min_size=DB_MIN_POOL_SIZE,
+        max_size=DB_MAX_POOL_SIZE,
     )
     await db.connect()
     log.info("[Bot] Подключение к базе данных установлено [✓]")
@@ -80,27 +79,40 @@ async def main():
     warehouse_manager = WarehouseManager(db)
     payments_manager = PaymentsManager(db)
 
-    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
+    # --- БЛОК НАСТРОЙКИ ПЛАНИРОВЩИКА ---
+    scheduler = AsyncIOScheduler(timezone="Europe/Moscow")  # Укажите ваш часовой пояс
+
+    # Задача 1: Отмена неоплаченных заказов
     scheduler.add_job(
-        buyer_order_manager.cancel_old_pending_orders, trigger="interval", minutes=5,
+        buyer_order_manager.cancel_old_pending_orders,
+        trigger="interval",
+        minutes=5,
         args=[PENDING_ORDER_TIMEOUT_MINUTES]
     )
+
+    # Задача 2: Синхронизация статусов доставки <-- ДОБАВЛЕНО
     scheduler.add_job(
-        check_delivery_statuses, trigger="interval", minutes=10,
+        check_delivery_statuses,
+        trigger="interval",
+        minutes=5,  # Проверять каждые 10 минут
         args=[buyer_order_manager, yandex_delivery_client]
     )
-    scheduler.add_job(
-        cleanup_stuck_orders, trigger="interval", minutes=30,
-        args=[buyer_order_manager]
-    )
+
+    scheduler.start()
+    # --- КОНЕЦ БЛОКА ---
 
     dp.update.middleware(
         ManagerMiddleware(
-            db=db, buyer_info_manager=buyer_info_manager, buyer_order_manager=buyer_order_manager,
-            order_items_manager=order_items_manager, product_position_manager=product_position_manager,
-            user_info_manager=user_info_manager, warehouse_manager=warehouse_manager,
-            payments_manager=payments_manager,  # <-- ИСПРАВЛЕНИЕ: Добавлен менеджер платежей
-            bot=bot, yandex_delivery_client=yandex_delivery_client
+            db=db,
+            buyer_info_manager=buyer_info_manager,
+            buyer_order_manager=buyer_order_manager,
+            order_items_manager=order_items_manager,
+            product_position_manager=product_position_manager,
+            user_info_manager=user_info_manager,
+            warehouse_manager=warehouse_manager,
+            payments_manager=payments_manager,
+            bot=bot,
+            yandex_delivery_client=yandex_delivery_client
         )
     )
     log.info("[Bot] Middleware настроен [✓]")
@@ -108,25 +120,31 @@ async def main():
     register_handlers(dp)
     log.info("[Bot] Обработчики зарегистрированы [✓]")
 
-    dp["scheduler"] = scheduler
-
     if sys.platform != "win32":
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: loop.create_task(shutdown(bot, dp)))
 
-    try:
         log.info("[Bot] Бот запущен. Ожидание завершения через Ctrl+C")
-        scheduler.start()
-        log.info("[Scheduler] Планировщик запущен [✓]")
-        await dp.start_polling(bot)
-    except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
-        log.warning("[Bot] Получен сигнал завершения работы")
-    finally:
-        await shutdown(bot, dp)
+        try:
+            await dp.start_polling(bot)
+        finally:
+            await shutdown(bot, dp)
+    else:
+        try:
+            log.info("[Bot] Бот запущен. Ожидание завершения через Ctrl+C")
+            await dp.start_polling(bot)
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            log.warning("[Bot] Получен сигнал завершения работы")
+        finally:
+            await shutdown(bot, dp)
 
 
 if __name__ == "__main__":
+    logging.getLogger('aiogram.dispatcher').setLevel(logging.DEBUG)
+    logging.getLogger('aiogram.event').setLevel(logging.DEBUG)
+    # ---------------------------
+
     log.info("-" * 80)
     log.info("[Bot] Запуск приложения")
     asyncio.run(main())

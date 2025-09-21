@@ -434,8 +434,7 @@ class BuyerOrderManager:
         sql = """
             SELECT id, yandex_claim_id
             FROM buyer_orders
-            WHERE status IN ('processing', 'transferring')
-              AND yandex_claim_id IS NOT NULL;
+            WHERE status IN ('processing', 'transferring');
         """
         records = await self.db.fetch(sql)
         return [dict(r) for r in records]
