@@ -31,6 +31,16 @@ async def check_delivery_statuses(
         order_id = order['id']
         claim_id = order['yandex_claim_id']
 
+        log.debug(f"{order_id}")
+
+        if claim_id is None:
+            await buyer_order_manager.cancel_order(order_id)
+
+            log.info(
+                f"Статус заказа #{order_id} был автоматически отменён.")
+
+            return
+
         try:
             claim_info = await yandex_delivery_client.get_claim_info(claim_id)
             if not claim_info:

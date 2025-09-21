@@ -94,9 +94,11 @@ async def main():
     scheduler.add_job(
         check_delivery_statuses,
         trigger="interval",
-        minutes=10,  # Проверять каждые 10 минут
+        minutes=5,  # Проверять каждые 10 минут
         args=[buyer_order_manager, yandex_delivery_client]
     )
+
+    scheduler.start()
     # --- КОНЕЦ БЛОКА ---
 
     dp.update.middleware(

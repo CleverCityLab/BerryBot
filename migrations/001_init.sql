@@ -94,7 +94,8 @@ CREATE TABLE buyer_orders
     delivery_cost     NUMERIC(10, 2)        DEFAULT 0.00,
     yandex_claim_id   VARCHAR(100), -- ID заявки
     payment_info      JSONB,
-    payment_date      TIMESTAMP WITH TIME ZONE
+    payment_date      TIMESTAMP WITH TIME ZONE,
+    created_at        TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 -- Корзина - несколько позиций в одном заказе

@@ -186,7 +186,7 @@ class BuyerOrderManager:
                     """
                     INSERT INTO buyer_orders (buyer_id, status, delivery_way,
                      delivery_address, used_bonus, registration_date, delivery_date, delivery_cost, comment)
-                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6)
+                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6, $7)
                     RETURNING id
                     """,
                     uid, delivery_way, address, used_bonus, delivery_date, delivery_cost, comment
@@ -434,8 +434,7 @@ class BuyerOrderManager:
         sql = """
             SELECT id, yandex_claim_id
             FROM buyer_orders
-            WHERE status IN ('processing', 'transferring')
-              AND yandex_claim_id IS NOT NULL;
+            WHERE status IN ('processing', 'transferring');
         """
         records = await self.db.fetch(sql)
         return [dict(r) for r in records]
