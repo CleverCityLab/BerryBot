@@ -1465,7 +1465,7 @@ async def process_new_warehouse_address_text(msg: Message, state: FSMContext, bo
         return
 
     lon, lat = coords
-    #data = await state.get_data()
+    # data = await state.get_data()
     await state.update_data(new_address=address_text, new_latitude=lat, new_longitude=lon)
     await state.set_state(WarehouseEdit.confirm_new_address_location)
 
