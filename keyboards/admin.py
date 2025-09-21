@@ -208,7 +208,7 @@ def admin_warehouse_detail_kb(warehouse_id: int) -> InlineKeyboardMarkup:
     builder.button(text="📝 Изменить Кв./Офис", callback_data=f"wh:edit:apartment:{warehouse_id}")
     builder.button(text="📝 Изменить Контактное лицо", callback_data=f"wh:edit:contact_name:{warehouse_id}")
     builder.button(text="📝 Изменить Телефон", callback_data=f"wh:edit:contact_phone:{warehouse_id}")
-    #builder.button(text="📍 Обновить Координаты", callback_data=f"wh:edit:location:{warehouse_id}")
+    # builder.button(text="📍 Обновить Координаты", callback_data=f"wh:edit:location:{warehouse_id}")
 
     builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")
     builder.adjust(1)
@@ -259,6 +259,7 @@ def admin_manage_add_back_kb() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Назад", callback_data="admin:manage")
     return builder.as_markup()
+
 
 def admin_confirm_geoposition_kb() -> InlineKeyboardMarkup:
     """
