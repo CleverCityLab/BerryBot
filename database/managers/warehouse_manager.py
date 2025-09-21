@@ -64,3 +64,16 @@ class WarehouseManager:
             data.get('contact_name'), data.get('contact_phone'),
             data.get('porch'), data.get('floor'), data.get('apartment')
         )
+
+    async def update_address_and_location(
+            self, warehouse_id: int, address: str, latitude: float, longitude: float
+    ):
+        """
+        Обновляет текстовый адрес и координаты для указанного склада.
+        """
+        sql = """
+            UPDATE warehouses
+            SET address = $1, latitude = $2, longitude = $3
+            WHERE id = $4
+        """
+        await self.db.execute(sql, address, latitude, longitude, warehouse_id)

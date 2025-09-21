@@ -52,3 +52,21 @@ async def check_delivery_statuses(
             log.exception(f"Ошибка при синхронизации статуса для заказа #{order_id} (claim_id: {claim_id}): {e}")
 
     log.info(f"Задача синхронизации статусов завершена. Обновлено статусов: {synced_count}.")
+
+
+async def cleanup_stuck_orders(buyer_order_manager: BuyerOrderManager):
+    """
+    Отменяет заказы, которые не удалось создать в Яндекс.Доставке.
+    """
+    # Устанавливаем таймаут. Если за 20 минут заявка не создалась - отменяем.
+    timeout = 20
+    log.info(f"Запуск задачи очистки зависших заказов (старше {timeout} минут)...")
+
+    try:
+        cancelled_ids = await buyer_order_manager.cancel_stuck_processing_orders(timeout)
+        if cancelled_ids:
+            log.info(f"Очистка завершена. Отменено зависших заказов: {len(cancelled_ids)}.")
+        else:
+            log.info("Очистка завершена. Зависших заказов не найдено.")
+    except Exception as e:
+        log.exception(f"Критическая ошибка в задаче очистки зависших заказов: {e}")

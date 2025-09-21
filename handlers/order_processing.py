@@ -435,7 +435,8 @@ async def process_apartment_and_calculate(
     buyer_profile = await buyer_info_manager.get_profile_by_tg(msg.from_user.id)
     if not buyer_profile:
         log.error(f"Не найден профиль для {msg.from_user.id} на этапе расчета.")
-        await return_to_main_menu("❗️Произошла системная ошибка: не найден ваш профиль.")
+        await return_to_main_menu("❗️Произошла системная ошибка: не найден ваш профиль.\n"
+                                  "Пожалуйста, нажмите /start")
         return
 
     # 4. Готовим `items` для API

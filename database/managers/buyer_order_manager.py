@@ -186,7 +186,7 @@ class BuyerOrderManager:
                     """
                     INSERT INTO buyer_orders (buyer_id, status, delivery_way,
                      delivery_address, used_bonus, registration_date, delivery_date, delivery_cost, comment)
-                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6)
+                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6, $7)
                     RETURNING id
                     """,
                     uid, delivery_way, address, used_bonus, delivery_date, delivery_cost, comment
@@ -467,5 +467,35 @@ class BuyerOrderManager:
                     cancelled_ids.append(order_id)
             except Exception as e:
                 log.exception(f"Ошибка при автоматической отмене заказа #{order_id}: {e}")
+
+        return cancelled_ids
+
+    async def cancel_stuck_processing_orders(self, timeout_minutes: int) -> list[int]:
+        """
+        Находит и отменяет заказы с доставкой, которые "зависли" в статусе 'processing'
+        без ID заявки Яндекса дольше указанного таймаута.
+        """
+        sql = """
+               SELECT id FROM buyer_orders
+               WHERE status = 'processing'
+                 AND delivery_way = 'delivery'
+                 AND yandex_claim_id IS NULL
+                 AND created_at < NOW() - MAKE_INTERVAL(mins => $1);
+           """
+        stale_orders = await self.db.fetch(sql, timeout_minutes)
+        if not stale_orders:
+            return []
+
+        order_ids = [r['id'] for r in stale_orders]
+        log.info(f"[Sanitizer] Найдено {len(order_ids)} зависших заказов для отмены: {order_ids}")
+
+        cancelled_ids = []
+        for order_id in order_ids:
+            try:
+                was_cancelled = await self.cancel_order(order_id)
+                if was_cancelled:
+                    cancelled_ids.append(order_id)
+            except Exception as e:
+                log.exception(f"[Sanitizer] Ошибка при автоматической отмене зависшего заказа #{order_id}: {e}")
 
         return cancelled_ids

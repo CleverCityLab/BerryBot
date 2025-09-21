@@ -22,7 +22,8 @@ from keyboards.admin import (admin_positions_list,
                              notify_confirm_kb, admin_warehouse_detail_kb,
                              admin_create_warehouse_kb, admin_manage_admins_kb,
                              admin_confirm_delete_admin_kb,
-                             admin_manage_add_back_kb
+                             admin_manage_add_back_kb,
+                             admin_confirm_geoposition_kb
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
@@ -30,6 +31,7 @@ from utils.constants import status_map
 
 from utils.decorators import admin_only
 from utils.logger import get_logger
+from utils.phone import normalize_phone
 from utils.secrets import get_admin_ids, add_admin_id, remove_admin_id
 
 log = get_logger("[Bot.Admin]")
@@ -98,6 +100,9 @@ class AdminNotify(StatesGroup):
 class WarehouseEdit(StatesGroup):
     waiting_for_value = State()
     waiting_for_location = State()
+    waiting_for_new_address_text = State()
+    confirm_new_address_location = State()
+    waiting_for_contact_phone = State()
 
 
 class WarehouseCreate(StatesGroup):
@@ -1030,6 +1035,35 @@ async def admin_delivery_settings(call: CallbackQuery, warehouse_manager: Wareho
     await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
+@admin_router.message(WarehouseEdit.waiting_for_contact_phone)
+@admin_only
+async def process_edit_warehouse_phone(msg: Message, state: FSMContext, warehouse_manager: WarehouseManager):
+    """
+    Получает новый номер телефона, валидирует, нормализует и сохраняет его.
+    """
+    # --- ВОТ ВАША ЛОГИКА ---
+    phone_e164 = normalize_phone(msg.text.strip())
+    if phone_e164 is None:
+        await msg.answer(
+            "❌ Телефон выглядит некорректно.\n"
+            "Укажите его, пожалуйста, ещё раз (например: +77771234567):"
+        )
+        return
+
+    data = await state.get_data()
+    warehouse_id = data.get("warehouse_id")
+
+    await warehouse_manager.update_field(warehouse_id, "contact_phone", phone_e164)
+
+    await state.clear()
+    await msg.answer("✅ Контактный телефон склада успешно обновлен!")
+
+    # Показываем админу обновленную информацию
+    default_warehouse = await warehouse_manager.get_default_warehouse()
+    text = format_warehouse_info(default_warehouse)
+    kb = admin_warehouse_detail_kb(default_warehouse['id']) if default_warehouse else None
+    await msg.answer(text, parse_mode="Markdown", reply_markup=kb)
+
 # --- Хендлер для кнопок "Изменить..." ---
 @admin_router.callback_query(F.data.startswith("wh:edit:"))
 @admin_only
@@ -1045,12 +1079,20 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
         await call.message.answer("Ошибка: некорректные данные в кнопке.")
         return
 
-    if field_to_edit == "location":
-        await state.set_state(WarehouseEdit.waiting_for_location)
+    await state.update_data(warehouse_id=warehouse_id)
+
+    # Если это адрес, запускаем специальный процесс
+    if field_to_edit == "address":
+        await state.set_state(WarehouseEdit.waiting_for_new_address_text)
         await state.update_data(warehouse_id=warehouse_id)
         await call.message.edit_text(
-            "Отправьте мне геолокацию склада (через скрепку 📎 -> Геопозиция)."
+            "Введите новый адрес склада (город, улица, дом):"
         )
+        return
+
+    if field_to_edit == "contact_phone":
+        await state.set_state(WarehouseEdit.waiting_for_contact_phone)
+        await call.message.edit_text("Введите новый контактный телефон склада (например, +79...):")
         return
 
     # --- ИЗМЕНЕНИЕ ЗДЕСЬ: ДОБАВЛЯЕМ НОВЫЕ ПОЛЯ В field_map ---
@@ -1258,6 +1300,15 @@ async def process_create_warehouse_contact_name(msg: Message, state: FSMContext)
 @admin_only
 async def process_create_warehouse_contact_phone_and_save(msg: Message, state: FSMContext,
                                                           warehouse_manager: WarehouseManager):
+    phone_e164 = normalize_phone(msg.text.strip())
+
+    if phone_e164 is None:
+        await msg.answer(
+            "Телефон выглядит некорректно. "
+            "Укажите его, пожалуйста, ещё раз (пример: +77771234567):"
+        )
+        return
+
     await state.update_data(contact_phone=msg.text.strip())
     data = await state.get_data()
     await state.clear()
@@ -1398,3 +1449,60 @@ async def process_delete_admin(call: CallbackQuery, bot: Bot):
         parse_mode="Markdown",
         reply_markup=admin_manage_admins_kb(admin_data)
     )
+
+
+@admin_router.message(WarehouseEdit.waiting_for_new_address_text, F.text)
+@admin_only
+async def process_new_warehouse_address_text(msg: Message, state: FSMContext, bot: Bot):
+    """Ловит текстовый адрес, геокодирует и отправляет карту для подтверждения."""
+    address_text = msg.text.strip()
+    await msg.answer("⏳ Ищу адрес на карте...")
+
+    coords = await geocode_address(address_text)
+    if not coords:
+        await msg.answer("Не удалось найти такой адрес. Попробуйте ввести его подробнее.")
+        return
+
+    lon, lat = coords
+    data = await state.get_data()
+    await state.update_data(new_address=address_text, new_latitude=lat, new_longitude=lon)
+    await state.set_state(WarehouseEdit.confirm_new_address_location)
+
+    await bot.send_location(chat_id=msg.chat.id, latitude=lat, longitude=lon)
+    await msg.answer(
+        "Я нашел новый адрес здесь. Местоположение верное?",
+        reply_markup=admin_confirm_geoposition_kb()  # Используем нашу новую клавиатуру
+    )
+
+
+@admin_router.callback_query(WarehouseEdit.confirm_new_address_location, F.data.startswith("geo:"))
+@admin_only
+async def process_new_warehouse_geoposition_confirm(
+        call: CallbackQuery, state: FSMContext, warehouse_manager: WarehouseManager
+):
+    """Обрабатывает подтверждение геоточки."""
+    await call.answer()
+    action = call.data.split(":")[1]
+
+    # Удаляем сообщения с картой и вопросом
+    with suppress(TelegramBadRequest):
+        await call.message.delete()
+        await call.bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id - 1)
+
+    if action == "confirm":
+        data = await state.get_data()
+        await warehouse_manager.update_address_and_location(
+            warehouse_id=data['warehouse_id'],
+            address=data['new_address'],
+            latitude=data['new_latitude'],
+            longitude=data['new_longitude']
+        )
+        await state.clear()
+
+        await call.message.answer("✅ Адрес и координаты склада успешно обновлены!")
+        # Показываем админу обновленную информацию
+        default_warehouse = await warehouse_manager.get_default_warehouse()
+        text = format_warehouse_info(default_warehouse)
+        kb = admin_warehouse_detail_kb(default_warehouse['id'])
+        await call.message.answer(text, parse_mode="Markdown", reply_markup=kb)
+        return

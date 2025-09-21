@@ -208,8 +208,7 @@ def admin_warehouse_detail_kb(warehouse_id: int) -> InlineKeyboardMarkup:
     builder.button(text="📝 Изменить Кв./Офис", callback_data=f"wh:edit:apartment:{warehouse_id}")
     builder.button(text="📝 Изменить Контактное лицо", callback_data=f"wh:edit:contact_name:{warehouse_id}")
     builder.button(text="📝 Изменить Телефон", callback_data=f"wh:edit:contact_phone:{warehouse_id}")
-    # --- НОВАЯ КНОПКА ---
-    builder.button(text="📍 Обновить Координаты", callback_data=f"wh:edit:location:{warehouse_id}")
+    #builder.button(text="📍 Обновить Координаты", callback_data=f"wh:edit:location:{warehouse_id}")
 
     builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")
     builder.adjust(1)
@@ -259,4 +258,15 @@ def admin_manage_add_back_kb() -> InlineKeyboardMarkup:
     """Клавиатура с кнопкой "Назад" для меню добавления администратора."""
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Назад", callback_data="admin:manage")
+    return builder.as_markup()
+
+def admin_confirm_geoposition_kb() -> InlineKeyboardMarkup:
+    """
+    Клавиатура для подтверждения геоточки в админ-панели.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Да, все верно", callback_data="geo:confirm")
+    # Кнопка "Назад" ведет в меню настроек доставки
+    builder.button(text="⬅️ Назад", callback_data="delivery-settings")
+    builder.adjust(2, 1)
     return builder.as_markup()

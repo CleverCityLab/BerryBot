@@ -72,6 +72,15 @@ def format_order_for_admin(
             f"   Telegram: @{buyer_data.get('tg_username', 'не указан')}",
         ])
 
+    if order.comment:
+        message_lines.extend(
+            [
+                "*- - - - - - - - - - - - - - - - -*",
+                "💬 *Комментарий клиента:*",
+                f"_{order.comment}_",
+            ]
+        )
+
     message_lines.extend([
         "*- - - - - - - - - - - - - - - - -*",
         "📋 *Состав заказа:*",
