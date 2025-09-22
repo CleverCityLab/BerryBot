@@ -1,7 +1,9 @@
 from collections import namedtuple
 from datetime import date
 from typing import Optional
+import json
 
+from aiogram.types import SuccessfulPayment
 from database.async_db import AsyncDatabase
 from database.models.buyer_orders import BuyerOrders
 
@@ -9,8 +11,11 @@ from utils.statuses import (
     ACTIVE_STATUSES, FINISHED_STATUSES, AWAITING_PICKUP,
     ALLOWED_FROM, S_FINISHED, S_CANCELLED
 )
+from utils.logger import get_logger
 
-Item = namedtuple("Item", "title price qty")
+# Добавим новые поля в namedtuple для удобства
+Item = namedtuple("Item", "title price qty weight_kg length_m width_m height_m")
+log = get_logger("[BuyerOrderManager]")
 
 
 class BuyerOrderManager:
@@ -62,26 +67,42 @@ class BuyerOrderManager:
         rec = await self.db.fetchrow(sql, tg_user_id, order_id)
         return BuyerOrders.from_record(rec) if rec else None
 
-    async def cancel_order(self, order_id: int) -> None:
-        sql = """
-              UPDATE buyer_orders
-              SET status      = 'cancelled',
-                  finished_at = CURRENT_DATE
-              WHERE id = $1
-                AND status = ANY ($2::order_status[]);
-              """
-        await self.db.execute(sql, order_id, list(ACTIVE_STATUSES))
+    async def cancel_order(self, order_id: int):
+        async with self.db.pool.acquire() as conn:
+            async with conn.transaction():
+                order_info = await conn.fetchrow(
+                    "SELECT buyer_id, used_bonus, status FROM buyer_orders WHERE id = $1 FOR UPDATE", order_id)
+                if not order_info or order_info['status'] not in ACTIVE_STATUSES:
+                    log.warning(f"Попытка отменить уже неактивный заказ #{order_id}")
+                    return
+
+                items_to_return = await conn.fetch("SELECT position_id, qty FROM order_items WHERE order_id = $1",
+                                                   order_id)
+
+                if items_to_return:
+                    await conn.executemany(
+                        "UPDATE product_position SET quantity = quantity + $2 WHERE id = $1",
+                        [(item['position_id'], item['qty']) for item in items_to_return]
+                    )
+                if order_info['used_bonus'] > 0:
+                    await conn.execute(
+                        "UPDATE buyer_info SET bonus_num = bonus_num + $1 WHERE user_id = $2",
+                        order_info['used_bonus'], order_info['buyer_id']
+                    )
+                await conn.execute("UPDATE buyer_orders SET status = 'cancelled' WHERE id = $1", order_id)
+                log.info(f"Заказ #{order_id} отменен. Товары и бонусы возвращены.")
 
     async def list_items_by_order_id(self, order_id: int) -> list[Item]:
         sql = """
-              SELECT pp.title, pp.price, oi.qty
-              FROM order_items oi
-                       JOIN product_position pp ON pp.id = oi.position_id
-              WHERE oi.order_id = $1
-              ORDER BY pp.title;
-              """
+                      SELECT pp.title, pp.price, oi.qty, pp.weight_kg, pp.length_m, pp.width_m, pp.height_m
+                      FROM order_items oi
+                      JOIN product_position pp ON pp.id = oi.position_id
+                      WHERE oi.order_id = $1
+                      ORDER BY pp.title;
+                      """
         recs = await self.db.fetch(sql, order_id)
-        return [Item(r["title"], r["price"], r["qty"]) for r in recs]
+        return [Item(r["title"], r["price"], r["qty"], r["weight_kg"], r["length_m"], r["width_m"], r["height_m"]) for r
+                in recs]
 
     async def order_total_sum_by_order_id(self, order_id: int) -> int:
         sql = """
@@ -95,18 +116,20 @@ class BuyerOrderManager:
     async def create_order(
             self,
             tg_user_id: int,
-            items: dict[int, int],  # {position_id: qty}
+            items: dict[int, int],
             delivery_way: str,
             address: Optional[str],
             used_bonus: int,
-    ) -> tuple[bool, str | None]:
+            delivery_cost: float = 0.0,
+            comment: Optional[str] = None
+    ) -> tuple[Optional[int], str | None]:
         """
-        Проверяем склад, создаём заказ, позиции, уменьшаем остатки
-        и списываем бонусы.
-        Возвращает (ok, error_message).
+        Проверяем склад, создаём заказ со статусом 'pending_payment',
+        позиции, уменьшаем остатки и списываем бонусы.
+        Возвращает (order_id, error_message).
         """
         if not items:
-            return False, "Корзина пуста"
+            return None, "Корзина пуста"  # ## <<< ИЗМЕНЕНО
 
         # одна транзакция на все действия
         async with self.db.pool.acquire() as conn:
@@ -117,25 +140,17 @@ class BuyerOrderManager:
                     tg_user_id,
                 )
                 if uid is None:
-                    return False, "Пользователь не найден"
+                    return None, "Пользователь не найден"  # ## <<< ИЗМЕНЕНО
 
                 # 2) блокируем выбранные позиции склада
                 pids = list(items.keys())
-                rows = await conn.fetch(
-                    """
-                    SELECT id, title, quantity, price
-                    FROM product_position
-                    WHERE id = ANY ($1::bigint[])
-                        FOR UPDATE
-                    """,
-                    pids,
-                )
+                rows = await conn.fetch("SELECT * FROM product_position WHERE id = ANY ($1::bigint[]) FOR UPDATE", pids)
                 stock = {r["id"]: r for r in rows}
 
                 # отсутствующие id
                 missing = [pid for pid in pids if pid not in stock]
                 if missing:
-                    return False, "Некорректные позиции: " + ", ".join(map(str, missing))
+                    return None, "Некорректные позиции: " + ", ".join(map(str, missing))  # ## <<< ИЗМЕНЕНО
 
                 # 3) проверяем остаток и считаем сумму
                 lack_msgs = []
@@ -149,9 +164,9 @@ class BuyerOrderManager:
                     order_total += stock[pid]["price"] * qty
 
                 if lack_msgs:
-                    return False, "Недостаточно на складе: " + "; ".join(lack_msgs)
+                    return None, "Недостаточно на складе: " + "; ".join(lack_msgs)  # ## <<< ИЗМЕНЕНО
 
-                # 4) скорректируем списание бонусов: не больше доступных и суммы заказа
+                # 4) скорректируем списание бонусов
                 cur_bonus = await conn.fetchval(
                     """
                     SELECT b.bonus_num
@@ -169,16 +184,12 @@ class BuyerOrderManager:
                 delivery_date = None if delivery_way == "pickup" else date.today()
                 order_id = await conn.fetchval(
                     """
-                    INSERT INTO buyer_orders
-                    (buyer_id, status, delivery_way, delivery_address, used_bonus, registration_date, delivery_date)
-                    VALUES ($1, 'waiting', $2::delivery_way, $3, $4, CURRENT_DATE, $5)
+                    INSERT INTO buyer_orders (buyer_id, status, delivery_way,
+                     delivery_address, used_bonus, registration_date, delivery_date, delivery_cost, comment)
+                    VALUES ($1, 'pending_payment', $2::delivery_way, $3, $4, CURRENT_DATE, $5, $6, $7)
                     RETURNING id
                     """,
-                    uid,
-                    delivery_way,
-                    address,
-                    safe_bonus,
-                    delivery_date,
+                    uid, delivery_way, address, used_bonus, delivery_date, delivery_cost, comment
                 )
 
                 # 6) вставляем позиции и уменьшаем склад
@@ -199,7 +210,7 @@ class BuyerOrderManager:
                     [(pid, qty) for pid, qty in items.items()],
                 )
 
-                # 7) списываем бонусы (если есть что списывать)
+                # 7) списываем бонусы
                 if safe_bonus > 0:
                     await conn.execute(
                         """
@@ -213,7 +224,7 @@ class BuyerOrderManager:
                         safe_bonus,
                     )
 
-        return True, None
+        return order_id, None  # возвращаем ID заказа
 
     async def get_order_by_id(self, order_id: int) -> BuyerOrders | None:
         rec = await self.db.fetchrow("SELECT * FROM buyer_orders WHERE id = $1", order_id)
@@ -260,8 +271,9 @@ class BuyerOrderManager:
         updated = await self.db.execute(
             "UPDATE buyer_orders SET status = $2, finished_at = CURRENT_DATE "
             "WHERE id = $1 AND status = ANY($3::order_status[])",
-            order_id, S_CANCELLED, ["waiting", "ready"]
+            order_id, S_CANCELLED, list(ACTIVE_STATUSES)
         )
+        # ------------------------
         return updated.upper().startswith("UPDATE")
 
     async def admin_today_revenue(self) -> int:
@@ -304,6 +316,7 @@ class BuyerOrderManager:
         head = await self.db.fetchrow("""
                                       SELECT o.id,
                                              o.status,
+                                             o.comment,
                                              o.delivery_way,
                                              o.registration_date,
                                              o.delivery_date,
@@ -334,3 +347,154 @@ class BuyerOrderManager:
         data["items"] = [dict(r) for r in items]
         data["total"] = int(total)
         return data
+
+    async def mark_order_as_paid_by_bonus(self, order_id: int) -> bool:
+        result = await self.db.execute(
+            """
+            UPDATE buyer_orders SET status = 'processing', payment_date = CURRENT_TIMESTAMP
+            WHERE id = $1 AND status = 'pending_payment'
+            """,
+            order_id
+        )
+        if 'UPDATE 1' in result:
+            log.info(f"Статус заказа #{order_id} (оплачен бонусами) обновлен на 'processing'.")
+            return True
+        return False
+
+    async def save_claim_id(self, order_id: int, claim_id: str):
+        """Сохраняет ID заявки из Яндекса в соответствующий заказ."""
+        sql = "UPDATE buyer_orders SET yandex_claim_id = $1 WHERE id = $2"
+        await self.db.execute(sql, claim_id, order_id)
+
+    async def mark_order_as_paid(self, order_id: int, payment_info: SuccessfulPayment):
+        payment_data = {
+            "currency": payment_info.currency, "total_amount": payment_info.total_amount,
+            "invoice_payload": payment_info.invoice_payload,
+            "telegram_payment_charge_id": payment_info.telegram_payment_charge_id,
+            "provider_payment_charge_id": payment_info.provider_payment_charge_id,
+        }
+        payment_json = json.dumps(payment_data)
+        await self.db.execute(
+            """
+            UPDATE buyer_orders SET status = 'processing', payment_date = CURRENT_TIMESTAMP, payment_info = $1
+            WHERE id = $2 AND status = 'pending_payment'
+            """,
+            payment_json, order_id
+        )
+
+    async def get_tg_user_id_by_order(self, order: BuyerOrders) -> Optional[int]:
+        """
+        По внутреннему ID покупателя в заказе находит его Telegram ID.
+        """
+        sql = "SELECT tg_user_id FROM user_info WHERE id = $1"
+        return await self.db.fetchval(sql, order.buyer_id)
+
+    async def sync_order_status_from_yandex(self, order_id: int, yandex_status: str) -> bool:
+        """
+        Синхронизирует статус заказа в нашей БД со статусом из Яндекса.
+        Возвращает True, если статус был изменен.
+        """
+        # Карта статусов Яндекса -> наши статусы
+        yandex_to_local_map = {
+            "delivered_finish": "finished",
+            "returned_finish": "finished",  # Возврат тоже считаем завершенным
+            "failed": "cancelled",
+            "cancelled": "cancelled",
+            "cancelled_with_payment": "cancelled",
+            "cancelled_by_taxi": "cancelled"
+        }
+
+        new_local_status = yandex_to_local_map.get(yandex_status)
+
+        if not new_local_status:
+            # Если статус из Яндекса не является конечным, ничего не делаем
+            return False
+
+        # Обновляем статус в нашей БД, только если он еще не завершен
+        sql = """
+            UPDATE buyer_orders
+            SET status = $1::order_status, finished_at = CURRENT_DATE
+            WHERE id = $2 AND status NOT IN ('finished', 'cancelled')
+            RETURNING id;
+            """
+        updated_id = await self.db.fetchval(sql, new_local_status, order_id)
+
+        if updated_id:
+            log.info(f"Статус заказа #{order_id} синхронизирован с Яндексом. Новый статус: {new_local_status}")
+            return True
+
+        return False
+
+    async def get_active_yandex_deliveries(self) -> list[dict]:
+        """
+        Возвращает список активных заказов с доставкой через Яндекс,
+        которые нужно проверить.
+        """
+        # Ищем заказы в статусах 'processing' или 'transferring', у которых есть claim_id
+        sql = """
+            SELECT id, yandex_claim_id
+            FROM buyer_orders
+            WHERE status IN ('processing', 'transferring');
+        """
+        records = await self.db.fetch(sql)
+        return [dict(r) for r in records]
+
+    async def cancel_old_pending_orders(self, timeout_minutes: int) -> list[int]:
+        """
+        Находит и отменяет заказы, которые "зависли" в статусе pending_payment.
+        Возвращает список ID отмененных заказов.
+        """
+        sql = """
+            SELECT id
+            FROM buyer_orders
+            WHERE status = 'pending_payment'
+              AND created_at < NOW() - MAKE_INTERVAL(mins => $1);
+        """
+        stale_orders = await self.db.fetch(sql, timeout_minutes)
+        if not stale_orders:
+            return []
+
+        order_ids = [r['id'] for r in stale_orders]
+        log.info(f"Найдено {len(order_ids)} просроченных заказов для отмены: {order_ids}")
+
+        cancelled_ids = []
+        for order_id in order_ids:
+            try:
+                # Используем существующий метод, который возвращает товары и бонусы
+                was_cancelled = await self.cancel_order(order_id)
+                if was_cancelled:
+                    cancelled_ids.append(order_id)
+            except Exception as e:
+                log.exception(f"Ошибка при автоматической отмене заказа #{order_id}: {e}")
+
+        return cancelled_ids
+
+    async def cancel_stuck_processing_orders(self, timeout_minutes: int) -> list[int]:
+        """
+        Находит и отменяет заказы с доставкой, которые "зависли" в статусе 'processing'
+        без ID заявки Яндекса дольше указанного таймаута.
+        """
+        sql = """
+               SELECT id FROM buyer_orders
+               WHERE status = 'processing'
+                 AND delivery_way = 'delivery'
+                 AND yandex_claim_id IS NULL
+                 AND created_at < NOW() - MAKE_INTERVAL(mins => $1);
+           """
+        stale_orders = await self.db.fetch(sql, timeout_minutes)
+        if not stale_orders:
+            return []
+
+        order_ids = [r['id'] for r in stale_orders]
+        log.info(f"[Sanitizer] Найдено {len(order_ids)} зависших заказов для отмены: {order_ids}")
+
+        cancelled_ids = []
+        for order_id in order_ids:
+            try:
+                was_cancelled = await self.cancel_order(order_id)
+                if was_cancelled:
+                    cancelled_ids.append(order_id)
+            except Exception as e:
+                log.exception(f"[Sanitizer] Ошибка при автоматической отмене зависшего заказа #{order_id}: {e}")
+
+        return cancelled_ids

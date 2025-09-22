@@ -13,3 +13,6 @@ WHERE user_id IN (1, 2);
 DELETE
 FROM user_info
 WHERE id IN (1, 2);
+DELETE
+FROM warehouses
+WHERE id = 1

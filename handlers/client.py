@@ -1,15 +1,15 @@
+from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram import Router, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from utils.constants import status_map, delivery_map
-from utils.logger import get_logger
-from utils.phone import normalize_phone
-from utils.secrets import get_admin_ids
-
+from api.yandex_delivery import geocode_address, YandexDeliveryClient
+from database.managers.buyer_info_manager import BuyerInfoManager
+from database.managers.buyer_order_manager import BuyerOrderManager
+from database.managers.product_position_manager import ProductPositionManager
+from database.managers.user_info_manager import UserInfoManager
 from keyboards.client import (
     get_main_inline_keyboard,
     get_orders_inline_keyboard,
@@ -18,13 +18,46 @@ from keyboards.client import (
     get_cancel_confirm_kb,
     get_all_products,
     choice_of_delivery,
-    delivery_address_select,
-    confirm_create_order, get_profile_inline_keyboard
+    get_profile_inline_keyboard,
+    confirm_geoposition_kb
 )
+
+from utils.constants import status_map, delivery_map
+from utils.logger import get_logger
+from utils.notifications import notify_admins
+from utils.phone import normalize_phone
+from utils.secrets import get_admin_ids
+
+MIN_PAYMENT_AMOUNT = 60
 
 log = get_logger("[Bot.Client]")
 
 client_router = Router()
+
+
+# --- ВРЕМЕННЫЙ ОТЛАДОЧНЫЙ MIDDLEWARE ---
+@client_router.callback_query.outer_middleware()
+async def spy_middleware(handler, event: CallbackQuery, data: dict):
+    state: FSMContext = data.get("state")
+    if state:
+        current_state = await state.get_state()
+        print("🕵️‍ SPY: Перед обработкой CallbackQuery")
+        print(f"   - Данные callback: {event.data}")
+        print(f"   - Текущее состояние FSM: {current_state}")
+
+    # Запускаем основной хендлер
+    result = await handler(event, data)
+
+    if state:
+        new_state = await state.get_state()
+        print("🕵️‍ SPY: После обработки CallbackQuery")
+        print(f"   - Новое состояние FSM: {new_state}")
+        print("-" * 30)
+
+    return result
+
+
+# ------------------------------
 
 
 async def handle_telegram_error(
@@ -69,24 +102,26 @@ class Registration(StatesGroup):
     phone = State()
 
 
-class CreateOrder(StatesGroup):
-    choose_products = State()
-    choose_delivery = State()
-    enter_address = State()
-    confirm = State()
-
-
 class ProfileEdit(StatesGroup):
     full_name = State()
     phone = State()
 
 
-def register_client(dp):
-    dp.include_router(client_router)
+class CreateOrder(StatesGroup):
+    choose_products = State()  # Шаг 1: Выбор товаров
+    choose_delivery = State()  # Шаг 2: Выбор способа получения (самовывоз/доставка)
+    enter_address = State()  # Шаг 3: Ввод адреса (только для доставки)
+    confirm_geoposition = State()  # Шаг 4: Подтверждение геопозиции
+    enter_porch = State()  # Шаг 5: Ввод подъезда
+    enter_floor = State()  # Шаг 6: Ввод этажа
+    enter_apartment = State()  # Шаг 7: Ввод квартиры
+    confirm_order = State()  # Шаг 8: Финальное подтверждение со всеми расчетами
+    waiting_payment = State()  # Шаг 9: Ожидание оплаты
 
 
 @client_router.message(CommandStart())
-async def client_start(message: Message, state: FSMContext, user_info_manager, buyer_info_manager):
+async def client_start(message: Message, state: FSMContext, user_info_manager: UserInfoManager,
+                       buyer_info_manager: BuyerInfoManager):
     log.info(f"[Bot.Client] Новый старт пользователя {message.from_user.id}")
     user_id = await user_info_manager.add_user(message.from_user.id)
 
@@ -188,7 +223,7 @@ async def cb_my_orders(call: CallbackQuery, buyer_order_manager) -> None:
 
 
 @client_router.callback_query(F.data == "back-main")
-async def cb_back_main(call: CallbackQuery, buyer_info_manager):
+async def cb_back_main(call: CallbackQuery, state: FSMContext, buyer_info_manager):
     await call.answer()
     is_admin = call.from_user.id in get_admin_ids()
     bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
@@ -199,6 +234,7 @@ async def cb_back_main(call: CallbackQuery, buyer_info_manager):
             parse_mode="Markdown",
             reply_markup=get_main_inline_keyboard(is_admin),
         )
+        await state.clear()
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
         await handle_telegram_error(e, call=call)
@@ -216,7 +252,7 @@ async def show_active_list(call: CallbackQuery, buyer_order_manager):
     try:
         await call.message.edit_text(
             text, parse_mode="Markdown",
-            reply_markup=get_orders_list_kb(orders, finished=False)
+            reply_markup=get_orders_list_kb(orders, finished=False, page=1)
         )
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
@@ -235,7 +271,7 @@ async def show_finished_list(call: CallbackQuery, buyer_order_manager):
     try:
         await call.message.edit_text(
             text, parse_mode="Markdown",
-            reply_markup=get_orders_list_kb(orders, finished=True)
+            reply_markup=get_orders_list_kb(orders, finished=True, page=1)
         )
     except TelegramBadRequest as e:
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
@@ -243,51 +279,75 @@ async def show_finished_list(call: CallbackQuery, buyer_order_manager):
         return
 
 
-@client_router.callback_query(F.data.startswith("order:"))
-async def order_detail(call: CallbackQuery, buyer_order_manager):
+@client_router.callback_query(F.data.startswith("orders:page:"))
+async def on_orders_page(call: CallbackQuery, buyer_order_manager):
+    _, _, suffix, page_str = call.data.split(":")
+    finished = (suffix == "fin")
+    try:
+        page = int(page_str)
+    except ValueError:
+        page = 1
+
+    tg = call.from_user.id
+    orders = await buyer_order_manager.list_orders(tg_user_id=tg, finished=finished)
+    kb = get_orders_list_kb(orders, finished=finished, page=page)
+
+    try:
+        await call.message.edit_reply_markup(reply_markup=kb)
+        await call.answer()
+    except TelegramBadRequest as e:
+        log.error(f"[Bot.Client] Ошибка при изменении клавиатуры: {e}")
+        await handle_telegram_error(e, call=call)
+
+
+@client_router.callback_query(F.data.startswith("order:"), StateFilter(None))
+async def order_detail(call: CallbackQuery, buyer_order_manager, *, delivery_status_text: str | None = None):
+    """
+    Показывает детали заказа. Может принимать дополнительный текст о статусе доставки.
+    """
     await call.answer()
-    _, oid, kind = call.data.split(":")  # kind = act | fin
+    _, oid, kind = call.data.split(":")
     order = await buyer_order_manager.get_order(call.from_user.id, int(oid))
     if not order:
         await call.answer("Заказ не найден", show_alert=True)
         return
 
     items = await buyer_order_manager.list_items_by_order_id(order.id)
-    if items:
-        lines = [
-            f"• {it.title} ×{it.qty} — `{it.price * it.qty}`₽"
-            for it in items
-        ]
-        items_text = "\n".join(lines)
-    else:
-        items_text = "_пусто_"
+    items_text = "\n".join([f"• {it.title} ×{it.qty} — {it.price * it.qty} ₽" for it in items]) if items else "пусто"
 
     total = await buyer_order_manager.order_total_sum_by_order_id(order.id)
+    status_txt = status_map.get(order.status.value, order.status.value)
+    delivery_txt = delivery_map.get(order.delivery_way.value, order.delivery_way.value)
 
-    status_txt = status_map[order.status.value]
-    delivery_txt = delivery_map[order.delivery_way.value]
-
-    text = (
-        f"*Заказ №{order.id}*\n\n"
-        f"*Товары:*\n{items_text}\n\n"
-        f"*Итого:* `{total} ₽`\n"
-        f"*Способ получения:* {delivery_txt}\n"
-        f"*Статус:* {status_txt}\n"
-        f"*Дата оформления:* {order.registration_date:%d.%m.%Y}"
-    )
+    # Собираем основной текст по частям
+    text_parts = [
+        f"Заказ №{order.id}",
+        f"Товары:\n{items_text}",
+        f"Итого: {total} ₽",
+        f"Способ получения: {delivery_txt}",
+        f"Статус: {status_txt}",
+        f"Дата оформления: {order.registration_date:%d.%m.%Y}"
+    ]
     if order.delivery_date:
-        text += f"\n*Плановая дата получения:* {order.delivery_date:%d.%m.%Y}"
+        text_parts.append(f"Плановая дата получения: {order.delivery_date:%d.%m.%Y}")
+
+    # Если был передан текст статуса доставки (из функции обновления), добавляем его
+    if delivery_status_text:
+        text_parts.append(delivery_status_text)
+
+    text = "\n\n".join(text_parts)
 
     try:
+        # Отправляем без parse_mode, как вы и хотели
         await call.message.edit_text(
             text,
-            parse_mode="Markdown",
             reply_markup=get_order_detail_kb(order),
+            disable_web_page_preview=True
         )
     except TelegramBadRequest as e:
-        log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
-        await handle_telegram_error(e, call=call)
-        return
+        if "message is not modified" not in str(e):
+            log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
+            await handle_telegram_error(e, call=call)
 
 
 @client_router.callback_query(F.data.startswith("cancel-no:"))
@@ -310,7 +370,7 @@ async def cancel_no(call: CallbackQuery, buyer_order_manager):
 
     total = await buyer_order_manager.order_total_sum_by_order_id(order.id)
 
-    status_txt = status_map[order.status.value]
+    status_txt = status_map.get(order.status.value, order.status.value)
     delivery_txt = delivery_map[order.delivery_way.value]
 
     text = (
@@ -352,17 +412,94 @@ async def order_cancel_init(call: CallbackQuery):
 
 
 @client_router.callback_query(F.data.startswith("cancel-yes:"))
-async def order_cancel_yes(call: CallbackQuery, buyer_order_manager):
+async def order_cancel_yes(
+        call: CallbackQuery,
+        bot: Bot,
+        buyer_order_manager: BuyerOrderManager,
+        yandex_delivery_client: YandexDeliveryClient,
+        buyer_info_manager: BuyerInfoManager,
+):
     order_id = int(call.data.split(":")[1])
+    log.info(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Процесс запущен пользователем {call.from_user.id}")
+
+    order = await buyer_order_manager.get_order_by_id(order_id)
+    if not order:
+        log.warning(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Заказ не найден в БД.")
+        await call.answer("Заказ не найден.", show_alert=True)
+        return
+
+    if order.yandex_claim_id:
+        await call.answer("Проверяем условия отмены в Яндексе...")
+        log.info(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Найден claim_id: {order.yandex_claim_id}. Проверяем условия.")
+
+        # 1. Запрашиваем информацию для получения ВЕРСИИ
+        claim_info = await yandex_delivery_client.get_claim_info(order.yandex_claim_id)
+        if not claim_info:
+            log.error(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Не удалось получить информацию о заявке от Яндекса.")
+            await call.answer("Не удалось получить информацию о заявке в Яндексе.", show_alert=True)
+            return
+
+        current_version = claim_info.get("version", 1)
+        log.info(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Текущая версия заявки: {current_version}")
+
+        # 2. Узнаем условия отмены
+        cancel_info = await yandex_delivery_client.get_cancellation_info(order.yandex_claim_id)
+
+        if not cancel_info or cancel_info.get("cancel_state") != "free":
+            price_info = (f"(стоимость платной отмены:"
+                          f" {cancel_info.get('price', 'N/A')} руб."
+                          f")") if cancel_info and cancel_info.get(
+                "cancel_state") == "paid" else ""
+
+            cancel_state = cancel_info.get("cancel_state") if cancel_info else "неизвестно"
+            log.warning(
+                f"[ОТМЕНА ЗАКАЗА #{order_id}] - Отмена не является бесплатной. "
+                f"Статус отмены: {cancel_state}. Процесс прерван.")
+
+            # Редактируем сообщение, чтобы показать причину
+            await call.message.edit_text(
+                f"❗️Заказ №{order.id} уже нельзя отменить бесплатно {price_info}.\n\n"
+                "Вероятно, курьер уже назначен или в пути.\n"
+                "Для решения вопроса свяжитесь с поддержкой.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⬅️ Назад к заказу", callback_data=f"order:{order.id}:act")]
+                ])
+            )
+            await call.answer()  # Убираем show_alert, так как уже есть сообщение
+            return
+
+        # 3. Отменяем заявку в Яндексе
+        log.info(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Отмена бесплатна. Отправляем запрос на отмену...")
+        is_cancelled_on_yandex = await yandex_delivery_client.cancel_claim(
+            claim_id=order.yandex_claim_id,
+            cancel_state="free",
+            version=current_version
+        )
+        if not is_cancelled_on_yandex:
+            log.error(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Яндекс вернул ошибку при отмене.")
+            await call.answer("Не удалось отменить заказ в системе доставки. Свяжитесь с поддержкой.", show_alert=True)
+            return
+
+        log.info(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Заявка в Яндексе успешно отменена.")
+
+    # 4. Отменяем заказ в нашей БД
     await buyer_order_manager.cancel_order(order_id)
+    log.info(f"[ОТМЕНА ЗАКАЗА #{order_id}] - Заказ успешно отменен в локальной БД.")
 
     await call.answer("Ваш заказ успешно отменён!", show_alert=True)
-
-    orders = await buyer_order_manager.list_orders(
-        tg_user_id=call.from_user.id, finished=False
+    # --- НАЧАЛО БЛОКА УВЕДОМЛЕНИЯ АДМИНУ ---
+    buyer_data = await buyer_info_manager.get_profile_by_tg(call.from_user.id)
+    admin_text = (
+        f"❌ *Клиент отменил заказ №{order_id}*\n\n"
+        f"Пользователь: {buyer_data.get('name_surname')} (@{buyer_data.get('tg_username', 'не указан')})"
     )
-    header = f"Кол-во ожидаемых заказов: `{len(orders)}`"
+    # Отправляем уведомление всем админам без клавиатуры
+    await notify_admins(bot, admin_text)
+    # --- КОНЕЦ БЛОКА УВЕДОМЛЕНИЯ ---
 
+    # 4. Обновляем и показываем пользователю список его активных заказов
+    orders = await buyer_order_manager.list_orders(tg_user_id=call.from_user.id, finished=False)
+    header = f"Кол-во ожидаемых заказов: `{len(orders)}`"
     try:
         await call.message.edit_text(
             header,
@@ -370,9 +507,10 @@ async def order_cancel_yes(call: CallbackQuery, buyer_order_manager):
             reply_markup=get_orders_list_kb(orders, finished=False)
         )
     except TelegramBadRequest as e:
-        log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
+        # Если не получилось отредактировать, отправляем новое сообщение
         await handle_telegram_error(e, call=call)
-        return
+        await call.message.answer(header, parse_mode="Markdown",
+                                  reply_markup=get_orders_list_kb(orders, finished=False))
 
 
 @client_router.callback_query(F.data.startswith("back-to-list:"))
@@ -442,17 +580,17 @@ def _text_cart_preview(items: list[dict], total: int, delivery_way: str, address
     return "\n".join(lines)
 
 
-@client_router.callback_query(F.data == "create-order")
-async def start_create(call: CallbackQuery, state: FSMContext, product_position_manager):
-    await call.answer()
-    await state.update_data(cart={})
+@client_router.callback_query(F.data.startswith("cart:page:"))
+async def on_cart_page(call: CallbackQuery, state: FSMContext, product_position_manager):
+    page = int(call.data.split(":")[-1])
 
-    products = await product_position_manager.list_not_empty_order_positions()  # [{id,title,price,quantity}, ...]
-    await state.set_state(CreateOrder.choose_products)
-    await call.message.edit_text(
-        "Выберите нужные позиции:",
-        reply_markup=get_all_products(products, cart={})
-    )
+    data = await state.get_data()
+    cart: dict[int, int] = data.get("cart", {})
+    products = await product_position_manager.list_not_empty_order_positions()
+
+    kb = get_all_products(products, cart, page=page, page_size=20)
+    await call.message.edit_reply_markup(reply_markup=kb)
+    await call.answer()
 
 
 @client_router.callback_query(CreateOrder.choose_delivery, F.data == "cart:back")
@@ -469,171 +607,87 @@ async def back_from_delivery_to_cart(call: CallbackQuery, state: FSMContext, pro
     await call.answer()
 
 
-@client_router.callback_query(CreateOrder.choose_products, F.data.startswith("cart:"))
-async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_manager):
-    products = await product_position_manager.list_not_empty_order_positions()
-    data = await state.get_data()
-    cart: dict[int, int] = data.get("cart", {})
-
-    action, *rest = call.data.split(":")[1:]
-    if action == "done":
-        if not cart:
-            await call.answer(text="Корзина пуста", show_alert=True)
-            return
-        await state.update_data(cart=cart)
-        await state.set_state(CreateOrder.choose_delivery)
-        await call.message.edit_text("Способ получения:", reply_markup=choice_of_delivery())
-        return
-
-    pid = int(rest[0])
-    stock_map = {p["id"]: p["quantity"] for p in products}
-    qty = cart.get(pid, 0)
-
-    if action == "toggle":
-        cart.pop(pid, None) if qty > 0 else cart.__setitem__(pid, 1)
-    elif action == "add":
-        new_qty = min(qty + 1, stock_map.get(pid, 0))
-        cart[pid] = new_qty
-    elif action == "sub":
-        new_qty = max(qty - 1, 0)
-        if new_qty == 0:
-            cart.pop(pid, None)
-        else:
-            cart[pid] = new_qty
-
-    await state.update_data(cart=cart)
-    await call.message.edit_text("Выберите нужные позиции:", reply_markup=get_all_products(products, cart))
-
-
-@client_router.callback_query(CreateOrder.choose_delivery, F.data.startswith("del:"))
-async def choose_delivery(call: CallbackQuery, state: FSMContext, buyer_info_manager, product_position_manager):
-    await call.answer()
-    arg = call.data.split(":")[1]
-    await state.update_data(delivery_way="pickup" if arg == "pickup" else "delivery")
-
-    if arg == "pickup":
-        await go_confirm(call, state, buyer_info_manager, product_position_manager)
-    else:
-        saved = await buyer_info_manager.get_address_by_tg(call.from_user.id)
-        await call.message.edit_text("Введите адрес или выберите сохранённый:",
-                                     reply_markup=delivery_address_select(saved))
-
-
-@client_router.callback_query(F.data == "addr:back")
-async def back_from_address_to_delivery(call: CallbackQuery, state: FSMContext):
-    await state.set_state(CreateOrder.choose_delivery)
-    await call.message.edit_text("Способ получения:", reply_markup=choice_of_delivery())
-    await call.answer()
-
-
-@client_router.callback_query(CreateOrder.choose_delivery, F.data.startswith("addr:"))
-async def address_flow(call: CallbackQuery, state: FSMContext, buyer_info_manager, product_position_manager):
-    await call.answer()
-    arg = call.data.split(":")[1]
-    if arg == "use_saved":
-        saved = await buyer_info_manager.get_address_by_tg(call.from_user.id)
-        await state.update_data(address=saved or "")
-        await go_confirm(call, state, buyer_info_manager, product_position_manager)
-    elif arg == "enter":
-        await call.message.edit_text("Введите адрес одним сообщением:")
-        await state.set_state(CreateOrder.enter_address)
-
-
-@client_router.message(CreateOrder.enter_address)
-async def address_entered(msg: Message, state: FSMContext, buyer_info_manager, product_position_manager):
-    addr = msg.text.strip()
-    await state.update_data(address=addr)
-
-    await buyer_info_manager.update_address_by_tg(msg.from_user.id, addr)
-    await msg.answer("Адрес сохранён ✔️")
-    await go_confirm(msg, state, buyer_info_manager, product_position_manager)
-
-
-async def go_confirm(target: Message | CallbackQuery, state: FSMContext, buyer_info_manager, product_position_manager):
-    data = await state.get_data()
-    cart: dict[int, int] = data["cart"]
-    delivery_way: str = data.get("delivery_way", "pickup")
-    address: str | None = data.get("address")
-
-    items = []
-    total = 0
-
-    products = await product_position_manager.get_order_position_by_ids(list(cart.keys()))
-    pmap = {p["id"]: p for p in products}
-    for pid, q in cart.items():
-        p = pmap[pid]
-        items.append({"title": p["title"], "price": p["price"], "qty": q})
-        total += p["price"] * q
-
-    # бонусы
-    bonuses = await buyer_info_manager.get_user_bonuses_by_tg(
-        target.from_user.id if isinstance(target, CallbackQuery) else target.from_user.id
-    )
-
-    used_bonus = data.get("used_bonus", 0)
-    await state.update_data(total=total, bonuses=bonuses, used_bonus=used_bonus)
-
-    text = _text_cart_preview(items, total, delivery_way, address, used_bonus)
-    kb = confirm_create_order(bonuses, used_bonus)
-    if isinstance(target, CallbackQuery):
-        try:
-            await target.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
-        except TelegramBadRequest as e:
-            log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
-            await handle_telegram_error(e, call=target)
-    else:
-        await target.answer(text, parse_mode="Markdown", reply_markup=kb)
-    await state.set_state(CreateOrder.confirm)
-
-
-@client_router.callback_query(CreateOrder.confirm, F.data.in_({"bonus:use", "bonus:skip"}))
-async def confirm_bonus(call: CallbackQuery, state: FSMContext, buyer_info_manager, product_position_manager):
-    data = await state.get_data()
-    if call.data.endswith("use"):
-        used = min(data["bonuses"], data["total"])
-        await state.update_data(used_bonus=used)
-        await call.answer(f"Списываем {used} ₽ бонусов", show_alert=True)
-    else:
-        await call.answer()
-        await state.update_data(used_bonus=0)
-    await go_confirm(call, state, buyer_info_manager, product_position_manager)
-
-
-@client_router.callback_query(CreateOrder.confirm, F.data == "confirm:restart")
-async def confirm_restart(call: CallbackQuery, state: FSMContext, product_position_manager):
-    await call.answer()
+@client_router.callback_query(F.data == "create-order")
+async def start_create(call: CallbackQuery, state: FSMContext, product_position_manager: ProductPositionManager):
+    await state.clear()
     await state.update_data(cart={})
     products = await product_position_manager.list_not_empty_order_positions()
+    await call.message.edit_text("Выберите товары:", reply_markup=get_all_products(products, {}))
     await state.set_state(CreateOrder.choose_products)
-    await call.message.edit_text("Выберите нужные позиции:", reply_markup=get_all_products(products, cart={}))
-
-
-@client_router.callback_query(CreateOrder.confirm, F.data == "confirm:ok")
-async def confirm_ok(call: CallbackQuery, state: FSMContext, buyer_order_manager, product_position_manager):
     await call.answer()
-    data = await state.get_data()
-    cart: dict[int, int] = data["cart"]
-    delivery_way: str = data.get("delivery_way", "pickup")
-    address: str | None = data.get("address")
-    used_bonus: int = data.get("used_bonus", 0)
 
-    ok, err = await buyer_order_manager.create_order(
-        tg_user_id=call.from_user.id,
-        items=cart,  # {position_id: qty}
-        delivery_way=delivery_way,
-        address=address,
-        used_bonus=used_bonus,
+
+@client_router.callback_query(CreateOrder.confirm_order, F.data == "addr:back")
+async def back_from_confirm_to_delivery(call: CallbackQuery, state: FSMContext):
+    """
+    Возвращает пользователя с экрана финального подтверждения
+    обратно к выбору способа доставки.
+    """
+    await call.answer()
+
+    # Очищаем данные, связанные с доставкой, чтобы избежать путаницы
+    await state.update_data(address=None, delivery_cost=None)
+
+    await call.message.edit_text(
+        "Как вы хотите получить заказ?",
+        reply_markup=choice_of_delivery()
     )
-    if not ok:
-        await call.answer(err or "Недостаточно товара на складе", show_alert=True)
-        products = await product_position_manager.list_all()
-        await call.message.edit_text("Обновили остатки, выберите заново:",
-                                     reply_markup=get_all_products(products, cart={}))
-        await state.set_state(CreateOrder.choose_products)
+    await state.set_state(CreateOrder.choose_delivery)
+
+
+@client_router.callback_query(CreateOrder.enter_address, F.data.startswith("addr:"))
+async def handle_address_source_choice(
+        call: CallbackQuery,
+        state: FSMContext,
+        bot: Bot,  # Нам понадобится bot для отправки карты
+        buyer_info_manager: BuyerInfoManager
+):
+    """
+    Обрабатывает кнопки "Использовать сохраненный" или "Ввести вручную".
+    """
+    await call.answer()
+    action = call.data.split(":")[1]
+
+    if action == "enter":
+        await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
         return
 
-    await state.clear()
-    await call.message.edit_text("Заказ оформлен! Мы свяжемся с вами для подтверждения.")  # TODO: добавить оплату
+    if action == "use_saved":
+        saved_address = await buyer_info_manager.get_address_by_tg(call.from_user.id)
+
+        if not saved_address:
+            await call.message.answer("У вас нет сохраненного адреса. Пожалуйста, введите его вручную.")
+            await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
+            return
+
+        await call.message.edit_text("⏳ Ищу сохраненный адрес на карте...")
+
+        coords = await geocode_address(saved_address)
+        if not coords:
+            await call.message.answer("Не удалось найти ваш сохраненный адрес на карте. Попробуйте ввести его вручную.")
+            return
+
+        lon, lat = coords
+        await state.update_data(address=saved_address, latitude=lat, longitude=lon)
+        await state.set_state(CreateOrder.confirm_geoposition)
+
+        await bot.send_location(chat_id=call.message.chat.id, latitude=lat, longitude=lon)
+        await call.message.answer(
+            "Я нашел ваш сохраненный адрес здесь. Все верно?",
+            reply_markup=confirm_geoposition_kb()
+        )
+
+
+# Обработчик PreCheckoutQuery
+@client_router.pre_checkout_query()
+async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
+    # Здесь можно добавить дополнительную проверку (например, наличие товара)
+    order_id = int(pre_checkout_query.invoice_payload.split(":")[1])
+    log.info(f"Получен pre-checkout запрос для заказа #{order_id}")
+
+    # Подтверждаем, что готовы принять платеж
+    await pre_checkout_query.answer(ok=True)
+    log.info(f"Ответили ok=True на pre-checkout для заказа #{order_id}")
 
 
 @client_router.callback_query(F.data == "noop")
