@@ -106,6 +106,7 @@ class WarehouseEdit(StatesGroup):
     waiting_for_new_address_text = State()
     confirm_new_address_location = State()
     waiting_for_contact_phone = State()
+    waiting_for_comment = State()
 
 
 class WarehouseCreate(StatesGroup):
@@ -117,6 +118,7 @@ class WarehouseCreate(StatesGroup):
     waiting_for_apartment = State()
     waiting_for_contact_name = State()
     waiting_for_contact_phone = State()
+    waiting_for_comment = State()
 
 
 class AdminManagement(StatesGroup):
@@ -1099,7 +1101,8 @@ def format_warehouse_info(warehouse_data: dict) -> str:
         f"Контактное лицо: {warehouse_data.get('contact_name', 'не указано')}\n"
         f"Телефон: {warehouse_data.get('contact_phone', 'не указан')}\n"
         f"Координаты (шир, долг): `{warehouse_data.get('latitude')},"
-        f" {warehouse_data.get('longitude')}`"
+        f" {warehouse_data.get('longitude')}`\n"
+        f"Комментарий курьеру: {warehouse_data.get('comment') if warehouse_data.get('comment') else 'Не указан'}"
     )
 
 
@@ -1195,7 +1198,8 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
         "floor": "этаж",
         "apartment": "номер квартиры/офиса",
         "contact_name": "имя контактного лица",
-        "contact_phone": "контактный телефон"
+        "contact_phone": "контактный телефон",
+        "comment": "комментарий"
     }
 
     prompt_text = field_map.get(field_to_edit)
@@ -1207,7 +1211,7 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
     await state.update_data(field_to_edit=field_to_edit, warehouse_id=warehouse_id)
 
     # Используем parse_mode="HTML" для жирного шрифта
-    await call.message.edit_text(f"Введите новое значение для поля '<b>{prompt_text}</b>':", parse_mode="HTML")
+    await call.message.edit_text(f"Введите новое значение для поля <b>{prompt_text}</b>:", parse_mode="HTML")
 
 
 # --- Хендлер, который ловит ответ от админа с новым значением ---
@@ -1290,7 +1294,7 @@ async def start_create_warehouse(call: CallbackQuery, state: FSMContext):
     """Начинает FSM для создания склада."""
     await state.set_state(WarehouseCreate.waiting_for_name)
     await call.message.edit_text(
-        "*Шаг 1/7:* Введите *название* склада (например, `Основной склад`):", parse_mode="Markdown")
+        "*Шаг 1/8:* Введите *название* склада (например, `Основной склад`):", parse_mode="Markdown")
     await call.answer()
 
 
@@ -1300,7 +1304,7 @@ async def process_create_warehouse_name(msg: Message, state: FSMContext):
     await state.update_data(name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_address)
     await msg.answer(
-        "*Шаг 2/7:* Теперь введите *адрес* склада (город, улица, дом) через запятую.\n"
+        "*Шаг 2/8:* Теперь введите *адрес* склада (город, улица, дом) через запятую.\n"
         "Например: *Нижний Новгород, Большая Покровская, 1*",
         parse_mode="Markdown")
 
@@ -1336,7 +1340,7 @@ async def process_create_warehouse_manual_location(msg: Message, state: FSMConte
     await state.set_state(WarehouseCreate.waiting_for_porch)
     await state.set_state(WarehouseCreate.waiting_for_porch)
     await msg.answer(
-        "*Шаг 3/7:* Точка принята! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
+        "*Шаг 3/8:* Точка принята! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
         parse_mode="Markdown")
 
 
@@ -1354,7 +1358,7 @@ async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, stat
     if action == "confirm":
         await state.set_state(WarehouseCreate.waiting_for_porch)
         await call.message.answer(
-            "*Шаг 3/7:* Отлично! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
+            "*Шаг 3/8:* Отлично! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
             parse_mode="Markdown")
         return
 
@@ -1364,7 +1368,7 @@ async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, stat
 async def process_create_warehouse_porch(msg: Message, state: FSMContext):
     await state.update_data(porch=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_floor)
-    await msg.answer("*Шаг 4/7*: Принято. Введите *этаж* (или `-`):", parse_mode="Markdown")
+    await msg.answer("*Шаг 4/8*: Принято. Введите *этаж* (или `-`):", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_floor)
@@ -1372,7 +1376,7 @@ async def process_create_warehouse_porch(msg: Message, state: FSMContext):
 async def process_create_warehouse_floor(msg: Message, state: FSMContext):
     await state.update_data(floor=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_apartment)
-    await msg.answer("*Шаг 5/7*: Принято. Введите *номер квартиры/офиса* (или `-`):", parse_mode="Markdown")
+    await msg.answer("*Шаг 5/8*: Принято. Введите *номер квартиры/офиса* (или `-`):", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_apartment)
@@ -1380,7 +1384,7 @@ async def process_create_warehouse_floor(msg: Message, state: FSMContext):
 async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
     await state.update_data(apartment=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_contact_name)
-    await msg.answer("*Шаг 6/7:* Адрес полностью собран! Теперь введите *имя контактного лица*:",
+    await msg.answer("*Шаг 6/8:* Адрес полностью собран! Теперь введите *имя контактного лица*:",
                      parse_mode="Markdown")
 
 
@@ -1389,13 +1393,12 @@ async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
 async def process_create_warehouse_contact_name(msg: Message, state: FSMContext):
     await state.update_data(contact_name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_contact_phone)
-    await msg.answer("*Шаг 7/7:* И последнее: введите *контактный телефон* склада:", parse_mode="Markdown")
+    await msg.answer("*Шаг 7/8:* Введите *контактный телефон* склада:", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_contact_phone)
 @admin_only
-async def process_create_warehouse_contact_phone_and_save(msg: Message, state: FSMContext,
-                                                          warehouse_manager: WarehouseManager):
+async def process_create_warehouse_contact_phone(msg: Message, state: FSMContext):
     phone_e164 = normalize_phone(msg.text.strip())
 
     if phone_e164 is None:
@@ -1406,6 +1409,17 @@ async def process_create_warehouse_contact_phone_and_save(msg: Message, state: F
         return
 
     await state.update_data(contact_phone=msg.text.strip())
+    await state.set_state(WarehouseCreate.waiting_for_comment)
+    await msg.answer("*Шаг 8/8:* Введите *комментарий* для курьера о складе (или `-`):", parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_comment)
+@admin_only
+async def process_create_warehouse_comment_and_save(msg: Message, state: FSMContext,
+                                                    warehouse_manager: WarehouseManager):
+    comment = msg.text.strip() if msg.text.strip() != '-' else None
+
+    await state.update_data(comment=comment)
     data = await state.get_data()
     await state.clear()
 

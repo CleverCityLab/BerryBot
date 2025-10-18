@@ -13,6 +13,7 @@ class Warehouse:
     contact_phone: str
     is_active: bool
     is_default: bool
+    comment: str
 
     @classmethod
     def from_record(cls, record: asyncpg.Record) -> "Warehouse":
@@ -26,4 +27,5 @@ class Warehouse:
             contact_phone=record["contact_phone"],
             is_active=record["is_active"],
             is_default=record["is_default"],
+            comment=record["comment"],
         )

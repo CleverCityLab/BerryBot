@@ -154,7 +154,8 @@ CREATE TABLE warehouses
     floor         VARCHAR(10), -- Этаж
     apartment     VARCHAR(10), -- Квартира/офис
     is_active     BOOLEAN        NOT NULL DEFAULT TRUE,
-    is_default    BOOLEAN        NOT NULL DEFAULT FALSE
+    is_default    BOOLEAN        NOT NULL DEFAULT FALSE,
+    comment TEXT
 );
 
 -- Добавим уникальный индекс, чтобы только один склад мог быть по умолчанию

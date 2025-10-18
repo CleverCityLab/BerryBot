@@ -189,13 +189,17 @@ async def create_yandex_delivery_claim(
         for item in order_items_from_db
     ]
 
+    final_comment = f"Комментарий заказчика: {order.comment}"
+    if warehouse.get('comment'):
+        final_comment = f"Комментарий о складе: {warehouse.get('comment')}\n\n" + final_comment
+
     # 3. Вызываем API
     claim_id = await yandex_delivery_client.create_claim(
         items=items_for_api,
         client_info=client_info,  # <-- Теперь это client_info
         warehouse_info=warehouse,
         order_id=order_id,  # <-- Теперь это order_id
-        order_comment=order.comment
+        order_comment=final_comment
     )
 
     if claim_id:

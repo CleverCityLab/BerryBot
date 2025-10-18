@@ -27,7 +27,7 @@ class WarehouseManager:
         """
         # "Белый список" полей, которые администратор может изменять текстом.
         allowed_fields = ["name", "address", "contact_name", "contact_phone",
-                          "porch", "floor", "apartment"]
+                          "porch", "floor", "apartment", "comment"]
 
         if field_name not in allowed_fields:
             log.warning(f"Попытка обновить запрещенное или неизвестное поле: {field_name}")
@@ -51,18 +51,18 @@ class WarehouseManager:
         Создает новую запись о складе со всеми деталями.
         """
         sql = """
-            INSERT INTO warehouses (name, address, latitude, longitude,
-             contact_name, contact_phone,
-             porch, floor, apartment, is_default)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
-            RETURNING id
-            """
+              INSERT INTO warehouses (name, address, latitude, longitude,
+                                      contact_name, contact_phone,
+                                      porch, floor, apartment, is_default, comment)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10)
+              RETURNING id \
+              """
         return await self.db.fetchval(
             sql,
             data.get('name'), data.get('address'),
             data.get('latitude'), data.get('longitude'),
             data.get('contact_name'), data.get('contact_phone'),
-            data.get('porch'), data.get('floor'), data.get('apartment')
+            data.get('porch'), data.get('floor'), data.get('apartment'), data.get('comment'),
         )
 
     async def update_address_and_location(
@@ -72,8 +72,10 @@ class WarehouseManager:
         Обновляет текстовый адрес и координаты для указанного склада.
         """
         sql = """
-            UPDATE warehouses
-            SET address = $1, latitude = $2, longitude = $3
-            WHERE id = $4
-        """
+              UPDATE warehouses
+              SET address   = $1,
+                  latitude  = $2,
+                  longitude = $3
+              WHERE id = $4 \
+              """
         await self.db.execute(sql, address, latitude, longitude, warehouse_id)
