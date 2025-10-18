@@ -12,7 +12,8 @@ class ProductPositionManager:
         return [dict(r) for r in await self.db.fetch(sql)]
 
     async def list_not_empty_order_positions(self) -> list[dict]:
-        sql = "SELECT id, title, price, quantity, weight_kg, image_path FROM product_position WHERE quantity>0 ORDER BY id"
+        sql = ("SELECT id, title, price, quantity, weight_kg, image_path "
+               "FROM product_position WHERE quantity>0 ORDER BY id")
         return [dict(r) for r in await self.db.fetch(sql)]
 
     async def get_order_position_by_ids(self, ids: list[int]) -> list[dict]:

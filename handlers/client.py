@@ -1,4 +1,3 @@
-import logging
 from math import ceil
 from pathlib import Path
 
