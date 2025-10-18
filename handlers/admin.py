@@ -318,6 +318,31 @@ async def adm_pos_add_height(msg: Message, state: FSMContext):
     )
 
 
+@admin_router.callback_query(F.data == "adm-pos:skip-image")
+@admin_only
+async def adm_pos_skip_image(call: CallbackQuery, state: FSMContext, product_position_manager):
+    data = await state.get_data()
+
+    pid = await product_position_manager.create_position(
+        title=data["title"],
+        price=data["price"],
+        quantity=data["qty"],
+        weight_kg=data["weight_kg"],
+        length_m=data["length_m"],
+        width_m=data["width_m"],
+        height_m=data["height_m"],
+        image_path=None,
+    )
+
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    text = format_product_info(pos)
+
+    await state.clear()
+    await call.message.edit_text("Позиция *успешно добавлена без изображения* ✅", parse_mode="Markdown")
+    await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+    await call.answer()
+
+
 @admin_router.message(PosEdit.add_image)
 @admin_only
 async def adm_pos_add_image(msg: Message, state: FSMContext, product_position_manager):
@@ -409,9 +434,10 @@ async def adm_pos_edit_title_set(msg: Message, state: FSMContext, product_positi
     text = format_product_info(pos)
     await msg.answer("Название *успешно изменено* ✅", parse_mode="Markdown")
 
-    await msg.answer_photo(
-        photo=FSInputFile(pos['image_path'])
-    )
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -449,9 +475,10 @@ async def adm_pos_edit_price_set(msg: Message, state: FSMContext, product_positi
     text = format_product_info(pos)
     await msg.answer("Цена *успешно изменена* ✅", parse_mode="Markdown")
 
-    await msg.answer_photo(
-        photo=FSInputFile(pos['image_path'])
-    )
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -503,9 +530,10 @@ async def adm_pos_edit_weight_set(msg: Message, state: FSMContext, product_posit
     # Показываем обновленную карточку товара
     pos = await product_position_manager.get_order_position_by_id(pid)
     text = format_product_info(pos)  # Выносим форматирование в отдельную функцию
-    await msg.answer_photo(
-        photo=FSInputFile(pos['image_path'])
-    )
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -552,9 +580,10 @@ async def adm_pos_edit_dims_set(msg: Message, state: FSMContext, product_positio
 
     pos = await product_position_manager.get_order_position_by_id(pid)
     text = format_product_info(pos)
-    await msg.answer_photo(
-        photo=FSInputFile(pos['image_path'])
-    )
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -575,9 +604,10 @@ async def adm_pos_edit_qty_set(msg: Message, state: FSMContext, product_position
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Доступное количество *успешно изменено* ✅", parse_mode="Markdown")
-    await msg.answer_photo(
-        photo=FSInputFile(pos['image_path'])
-    )
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -605,9 +635,10 @@ async def adm_pos_delete_yes(call: CallbackQuery, product_position_manager):
         if pos:
             # Обновляем текст вывода, чтобы показать новые данные
             text = format_product_info(pos)
-            await call.message.answer_photo(
-                photo=FSInputFile(pos['image_path'])
-            )
+            if pos['image_path'] is not None:
+                await call.message.answer_photo(
+                    photo=FSInputFile(pos['image_path'])
+                )
             await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
         return
     items = await product_position_manager.list_all_order_positions()
@@ -1239,9 +1270,10 @@ async def adm_pos_detail(call: CallbackQuery, product_position_manager):
     # Формируем новый, расширенный текст
     text = format_product_info(pos)
     try:
-        await call.message.answer_photo(
-            photo=FSInputFile(pos['image_path'])
-        )
+        if pos['image_path'] is not None:
+            await call.message.answer_photo(
+                photo=FSInputFile(pos['image_path'])
+            )
         await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
     except TelegramBadRequest as e:
         await handle_telegram_error(e, call=call)

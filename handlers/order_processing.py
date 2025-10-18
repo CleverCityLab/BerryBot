@@ -17,7 +17,7 @@ from database.managers.payments_manager import PaymentsManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.warehouse_manager import WarehouseManager
 from database.models.payments import PaymentStatus
-from handlers.client import client_router
+from handlers.client import client_router, cleanup_client_media
 from keyboards.client import (
     get_all_products, choice_of_delivery, delivery_address_select,
     confirm_create_order, confirm_geoposition_kb, get_main_inline_keyboard
@@ -227,6 +227,9 @@ async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_mana
         if not cart:
             await call.answer(text="Корзина пуста", show_alert=True)
             return
+
+        await cleanup_client_media(call.bot, state, call.message.chat.id)
+
         await state.update_data(cart=cart)
         await state.set_state(CreateOrder.choose_delivery)
         await call.message.edit_text("Способ получения:", reply_markup=choice_of_delivery())
