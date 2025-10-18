@@ -29,6 +29,7 @@ services:
       - .env
     volumes:
       - ./secrets.json:/app/secrets.json
+      - ./product_images:/app/product_images
     depends_on:
       postgres:
         condition: service_healthy

@@ -32,14 +32,15 @@ class ProductPositionManager:
     async def create_position(
             self,
             title: str, price: int, quantity: int,
-            weight_kg: float, length_m: float, width_m: float, height_m: float  # <-- НОВЫЕ АРГУМЕНТЫ
+            weight_kg: float, length_m: float, width_m: float, height_m: float, image_path: str,
     ) -> int:
         sql = """
-            INSERT INTO product_position (title, price, quantity, weight_kg, length_m, width_m, height_m)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id
-            """
-        return await self.db.fetchval(sql, title, price, quantity, weight_kg, length_m, width_m, height_m)
+              INSERT INTO product_position (title, price, quantity, weight_kg, length_m, width_m, height_m, image_path)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              RETURNING id \
+              """
+        return await self.db.fetchval(sql, title, price, quantity, weight_kg, length_m,
+                                      width_m, height_m, image_path)
 
     async def update_fields(
             self,

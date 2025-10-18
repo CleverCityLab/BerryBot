@@ -649,7 +649,8 @@ async def handle_address_source_choice(
     action = call.data.split(":")[1]
 
     if action == "enter":
-        await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
+        await call.message.edit_text("Введите основную часть адреса через запятую (город, улица, дом).\n\n"
+                                     "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML")
         return
 
     if action == "use_saved":
@@ -657,7 +658,8 @@ async def handle_address_source_choice(
 
         if not saved_address:
             await call.message.answer("У вас нет сохраненного адреса. Пожалуйста, введите его вручную.")
-            await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
+            await call.message.edit_text("Введите основную часть адреса через запятую (город, улица, дом).\n\n"
+                                         "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML")
             return
 
         await call.message.edit_text("⏳ Ищу сохраненный адрес на карте...")

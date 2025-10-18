@@ -269,7 +269,9 @@ async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_i
     else:
         # Если доставка, запускаем процесс ввода адреса
         await call.message.edit_text(
-            "Введите адрес доставки (город, улица, дом)"
+            "Введите адрес доставки через запятую (город, улица, дом).\n\n"
+            "Например: <b>Нижний Новгород, Большая Покровская, 1</b>",
+            parse_mode="HTML"
         )
         await state.set_state(CreateOrder.enter_address)
 
@@ -284,7 +286,8 @@ async def start_address_entry(call: CallbackQuery, state: FSMContext, buyer_info
     saved_address = await buyer_info_manager.get_address_by_tg(call.from_user.id)
 
     await call.message.edit_text(
-        "Введите основную часть адреса (Город, улица, дом):",
+        "Введите основную часть адреса через запятую (город, улица, дом).\n\n"
+        "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML",
         reply_markup=delivery_address_select(saved_address)  # Клавиатура с "Использовать сохраненный"
     )
     await state.set_state(CreateOrder.enter_address)

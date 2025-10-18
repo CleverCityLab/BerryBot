@@ -44,6 +44,12 @@ def admin_positions_list(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def admin_skip_image_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="adm-pos:skip-image")]
+    ])
+
+
 def admin_pos_detail(pid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Изменить название", callback_data=f"adm-pos:edit-title:{pid}")],

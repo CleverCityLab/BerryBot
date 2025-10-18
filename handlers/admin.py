@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import suppress
+from datetime import datetime
 from typing import Union
 
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, FSInputFile
 
 from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.warehouse_manager import WarehouseManager
@@ -23,7 +24,7 @@ from keyboards.admin import (admin_positions_list,
                              admin_create_warehouse_kb, admin_manage_admins_kb,
                              admin_confirm_delete_admin_kb,
                              admin_manage_add_back_kb,
-                             admin_confirm_geoposition_kb
+                             admin_confirm_geoposition_kb, admin_skip_image_kb
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
@@ -32,6 +33,7 @@ from utils.constants import status_map
 from utils.decorators import admin_only
 from utils.logger import get_logger
 from utils.phone import normalize_phone
+from utils.save_image import ensure_dir, ext_from_mime_or_name, MEDIA_DIR, MEDIA_PUBLIC_ROOT
 from utils.secrets import get_admin_ids, add_admin_id, remove_admin_id
 
 log = get_logger("[Bot.Admin]")
@@ -84,6 +86,7 @@ class PosEdit(StatesGroup):
     add_length = State()  # Длина
     add_width = State()  # Ширина
     add_height = State()  # Высота
+    add_image = State()
 
     edit_title = State()
     edit_price = State()
@@ -300,15 +303,49 @@ async def adm_pos_add_width(msg: Message, state: FSMContext):
 
 @admin_router.message(PosEdit.add_height)
 @admin_only
-async def adm_pos_add_height_and_create(msg: Message, state: FSMContext, product_position_manager):
+async def adm_pos_add_height(msg: Message, state: FSMContext):
     height = await _parse_float(msg.text)
     if height is None:
         await msg.answer("Высота должна быть положительным числом (например: 0.1).")
         return
 
-    data = await state.get_data()
+    await state.update_data(height_m=height)
+    await state.set_state(PosEdit.add_image)
+    await msg.answer(
+        "Отправьте Изображение или нажмите «Пропустить»",
+        parse_mode="Markdown",
+        reply_markup=admin_skip_image_kb()
+    )
 
-    # Вызываем обновленный метод создания позиции
+
+@admin_router.message(PosEdit.add_image)
+@admin_only
+async def adm_pos_add_image(msg: Message, state: FSMContext, product_position_manager):
+    ensure_dir(MEDIA_DIR)
+
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        ext = ".jpg"
+    elif msg.document:
+        doc = msg.document
+        if not (doc.mime_type and doc.mime_type.startswith("image/")):
+            await msg.answer("Это не изображение. Пришлите фото или документ-изображение.")
+            return
+        file_id = doc.file_id
+        ext = ext_from_mime_or_name(doc.mime_type, doc.file_name)
+    else:
+        await msg.answer("Пришлите изображение: как фото или как документ.")
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"product_{stamp}{ext}"
+    abs_path = MEDIA_DIR / filename
+
+    await msg.bot.download(file_id, destination=abs_path)
+
+    rel_path = f"{MEDIA_PUBLIC_ROOT}/{filename}"
+
+    data = await state.get_data()
     pid = await product_position_manager.create_position(
         title=data["title"],
         price=data["price"],
@@ -316,16 +353,18 @@ async def adm_pos_add_height_and_create(msg: Message, state: FSMContext, product
         weight_kg=data["weight_kg"],
         length_m=data["length_m"],
         width_m=data["width_m"],
-        height_m=height  # Последний параметр берем напрямую
+        height_m=data["height_m"],
+        image_path=rel_path,
     )
     await state.clear()
 
     pos = await product_position_manager.get_order_position_by_id(pid)
-
-    # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
-
     await msg.answer("Позиция *успешно добавлена* ✅", parse_mode="Markdown")
+
+    await msg.answer_photo(
+        photo=FSInputFile(abs_path)
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -369,6 +408,10 @@ async def adm_pos_edit_title_set(msg: Message, state: FSMContext, product_positi
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Название *успешно изменено* ✅", parse_mode="Markdown")
+
+    await msg.answer_photo(
+        photo=FSInputFile(pos['image_path'])
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -405,6 +448,10 @@ async def adm_pos_edit_price_set(msg: Message, state: FSMContext, product_positi
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Цена *успешно изменена* ✅", parse_mode="Markdown")
+
+    await msg.answer_photo(
+        photo=FSInputFile(pos['image_path'])
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -456,6 +503,9 @@ async def adm_pos_edit_weight_set(msg: Message, state: FSMContext, product_posit
     # Показываем обновленную карточку товара
     pos = await product_position_manager.get_order_position_by_id(pid)
     text = format_product_info(pos)  # Выносим форматирование в отдельную функцию
+    await msg.answer_photo(
+        photo=FSInputFile(pos['image_path'])
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -502,6 +552,9 @@ async def adm_pos_edit_dims_set(msg: Message, state: FSMContext, product_positio
 
     pos = await product_position_manager.get_order_position_by_id(pid)
     text = format_product_info(pos)
+    await msg.answer_photo(
+        photo=FSInputFile(pos['image_path'])
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -522,6 +575,9 @@ async def adm_pos_edit_qty_set(msg: Message, state: FSMContext, product_position
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Доступное количество *успешно изменено* ✅", parse_mode="Markdown")
+    await msg.answer_photo(
+        photo=FSInputFile(pos['image_path'])
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -549,7 +605,10 @@ async def adm_pos_delete_yes(call: CallbackQuery, product_position_manager):
         if pos:
             # Обновляем текст вывода, чтобы показать новые данные
             text = format_product_info(pos)
-            await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+            await call.message.answer_photo(
+                photo=FSInputFile(pos['image_path'])
+            )
+            await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
         return
     items = await product_position_manager.list_all_order_positions()
     try:
@@ -1087,7 +1146,8 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
         await state.set_state(WarehouseEdit.waiting_for_new_address_text)
         await state.update_data(warehouse_id=warehouse_id)
         await call.message.edit_text(
-            "Введите новый адрес склада (город, улица, дом):"
+            "Введите основную часть адреса <b>склада</b> через запятую (город, улица, дом).\n\n"
+            "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML"
         )
         return
 
@@ -1179,8 +1239,10 @@ async def adm_pos_detail(call: CallbackQuery, product_position_manager):
     # Формируем новый, расширенный текст
     text = format_product_info(pos)
     try:
-        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
-        await call.answer()
+        await call.message.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
+        await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
     except TelegramBadRequest as e:
         await handle_telegram_error(e, call=call)
         return
@@ -1206,7 +1268,8 @@ async def process_create_warehouse_name(msg: Message, state: FSMContext):
     await state.update_data(name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_address)
     await msg.answer(
-        "*Шаг 2/7:* Теперь введите *адрес* склада (город, улица, дом).",
+        "*Шаг 2/7:* Теперь введите *адрес* склада (город, улица, дом) через запятую.\n"
+        "Например: *Нижний Новгород, Большая Покровская, 1*",
         parse_mode="Markdown")
 
 

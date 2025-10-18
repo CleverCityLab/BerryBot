@@ -71,7 +71,8 @@ CREATE TABLE product_position
     weight_kg NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
     length_m  NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
     width_m   NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
-    height_m  NUMERIC(7, 3) NOT NULL DEFAULT 0.1
+    height_m  NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
+    image_path TEXT
 );
 
 --
