@@ -630,7 +630,7 @@ async def adm_pos_delete_confirm(call: CallbackQuery):
 
 @admin_router.callback_query(F.data.startswith("adm-pos:edit-img:"))
 @admin_only
-async def adm_pos_edit_title_start(call: CallbackQuery, state: FSMContext):
+async def adm_pos_edit_img_start(call: CallbackQuery, state: FSMContext):
     try:
         pid = int(call.data.split(":")[2])
     except (ValueError, IndexError):
