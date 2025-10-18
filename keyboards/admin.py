@@ -57,6 +57,7 @@ def admin_pos_detail(pid: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Изменить количество", callback_data=f"adm-pos:edit-qty:{pid}")],
         [InlineKeyboardButton(text="Изменить вес", callback_data=f"adm-pos:edit-weight:{pid}")],
         [InlineKeyboardButton(text="Изменить габариты", callback_data=f"adm-pos:edit-dims:{pid}")],
+        [InlineKeyboardButton(text="Изменить изображение", callback_data=f"adm-pos:edit-img:{pid}")],
         [InlineKeyboardButton(text="Удалить", callback_data=f"adm-pos:delete:{pid}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm-pos:back-list")],
     ])

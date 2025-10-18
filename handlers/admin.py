@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from typing import Union
 
 from aiogram import Router, F, Bot
@@ -93,6 +94,7 @@ class PosEdit(StatesGroup):
     edit_qty = State()
     edit_weight = State()
     edit_dims = State()
+    edit_img = State()
 
 
 class AdminNotify(StatesGroup):
@@ -624,6 +626,82 @@ async def adm_pos_delete_confirm(call: CallbackQuery):
         log.error(f"[Bot.Client] Ошибка при изменении сообщения: {e}")
         await handle_telegram_error(e, call=call)
         return
+
+
+@admin_router.callback_query(F.data.startswith("adm-pos:edit-img:"))
+@admin_only
+async def adm_pos_edit_title_start(call: CallbackQuery, state: FSMContext):
+    try:
+        pid = int(call.data.split(":")[2])
+    except (ValueError, IndexError):
+        await call.answer("Ошибка в данных кнопки.", show_alert=True)
+        return
+
+    await state.update_data(pid=pid)
+    await state.set_state(PosEdit.edit_img)
+    try:
+        await call.message.edit_text(
+            "Отправьте новое *изображение*:",
+            parse_mode="Markdown",
+            reply_markup=admin_edit_back(pid)
+        )
+        await call.answer()
+    except TelegramBadRequest as e:
+        await handle_telegram_error(e, call=call)
+
+
+@admin_router.message(PosEdit.edit_img)
+@admin_only
+async def adm_pos_edit_img_set(msg: Message, state: FSMContext, product_position_manager):
+    ensure_dir(MEDIA_DIR)
+
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        ext = ".jpg"
+    elif msg.document:
+        doc = msg.document
+        if not (doc.mime_type and doc.mime_type.startswith("image/")):
+            await msg.answer("Это не изображение. Пришлите фото или документ-изображение.")
+            return
+
+        file_id = doc.file_id
+        ext = ext_from_mime_or_name(doc.mime_type, doc.file_name)
+    else:
+        await msg.answer("Пришлите изображение: как фото или как документ.")
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"product_{stamp}{ext}"
+    abs_path = MEDIA_DIR / filename
+    await msg.bot.download(file_id, destination=abs_path)
+
+    rel_path = f"{MEDIA_PUBLIC_ROOT}/{filename}"
+    data = await state.get_data()
+    pid = data["pid"]
+
+    try:
+        old = await product_position_manager.get_order_position_by_id(pid)
+        old_path = old.get("image_path")
+        if old_path:
+            old_abs = (MEDIA_DIR / Path(old_path).name)
+            if old_abs.is_file():
+                old_abs.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    text = format_product_info(pos)
+
+    await state.clear()
+
+    await product_position_manager.update_image(pid, rel_path)
+
+    await msg.answer("Позиция *успешно добавлена* ✅", parse_mode="Markdown")
+
+    await msg.answer_photo(
+        photo=FSInputFile(abs_path)
+    )
+    await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
 @admin_router.callback_query(F.data.startswith("adm-pos:delete-yes:"))

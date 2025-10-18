@@ -98,3 +98,7 @@ class ProductPositionManager:
         """Обновляет габариты товара."""
         sql = "UPDATE product_position SET length_m = $1, width_m = $2, height_m = $3 WHERE id = $4"
         await self.db.execute(sql, length_m, width_m, height_m, pos_id)
+
+    async def update_image(self, position_id: int, image_path: str) -> None:
+        sql = "UPDATE product_position SET image_path = $2 WHERE id = $1"
+        await self.db.execute(sql, position_id, image_path)
