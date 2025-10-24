@@ -11,7 +11,7 @@ services:
     ports:
       - "${MAKE_DB_PORT}:${DB_PORT}"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
     networks:
       - app-network
     healthcheck:
