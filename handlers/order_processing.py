@@ -633,15 +633,15 @@ async def confirm_ok(
                             "description": f"Оплата товаров по заказу №{order_id}",
                             "quantity": "1.00",
                             "amount": {
-                                "value":  f"{total_amount_kopecks / 100:.2f}",
+                                "value": f"{total_amount_kopecks / 100:.2f}",
                                 "currency": "RUB"
                             },
-                            "vat_code": 1, # "Без НДС" - это правильно, т.к. вы как ИП его не платите
+                            "vat_code": 1,  # "Без НДС" - это правильно, т.к. вы как ИП его не платите
                             "payment_mode": "full_payment",
                             "payment_subject": "commodity"
                         }
                     ]
-                # tax_system_code здесь НЕТ, как и сказала поддержка
+                    # tax_system_code здесь НЕТ, как и сказала поддержка
                 }
             }
 
@@ -722,6 +722,7 @@ async def confirm_ok(
             admin_text, admin_kb = format_order_for_admin(order_object, buyer_data, items_list)
             await notify_admins(bot, text=admin_text, reply_markup=admin_kb)
         await state.clear()
+
 
 # --- ОБРАБОТКА УСПЕШНОЙ ОПЛАТЫ ---
 
