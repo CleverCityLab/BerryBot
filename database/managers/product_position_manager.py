@@ -12,7 +12,8 @@ class ProductPositionManager:
         return [dict(r) for r in await self.db.fetch(sql)]
 
     async def list_not_empty_order_positions(self) -> list[dict]:
-        sql = "SELECT id, title, price, quantity, weight_kg FROM product_position WHERE quantity>0 ORDER BY id"
+        sql = ("SELECT id, title, price, quantity, weight_kg, image_path "
+               "FROM product_position WHERE quantity>0 ORDER BY id")
         return [dict(r) for r in await self.db.fetch(sql)]
 
     async def get_order_position_by_ids(self, ids: list[int]) -> list[dict]:
@@ -32,14 +33,15 @@ class ProductPositionManager:
     async def create_position(
             self,
             title: str, price: int, quantity: int,
-            weight_kg: float, length_m: float, width_m: float, height_m: float  # <-- НОВЫЕ АРГУМЕНТЫ
+            weight_kg: float, length_m: float, width_m: float, height_m: float, image_path: str,
     ) -> int:
         sql = """
-            INSERT INTO product_position (title, price, quantity, weight_kg, length_m, width_m, height_m)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id
-            """
-        return await self.db.fetchval(sql, title, price, quantity, weight_kg, length_m, width_m, height_m)
+              INSERT INTO product_position (title, price, quantity, weight_kg, length_m, width_m, height_m, image_path)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              RETURNING id \
+              """
+        return await self.db.fetchval(sql, title, price, quantity, weight_kg, length_m,
+                                      width_m, height_m, image_path)
 
     async def update_fields(
             self,
@@ -96,3 +98,7 @@ class ProductPositionManager:
         """Обновляет габариты товара."""
         sql = "UPDATE product_position SET length_m = $1, width_m = $2, height_m = $3 WHERE id = $4"
         await self.db.execute(sql, length_m, width_m, height_m, pos_id)
+
+    async def update_image(self, position_id: int, image_path: str) -> None:
+        sql = "UPDATE product_position SET image_path = $2 WHERE id = $1"
+        await self.db.execute(sql, position_id, image_path)

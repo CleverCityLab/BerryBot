@@ -44,6 +44,12 @@ def admin_positions_list(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def admin_skip_image_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Пропустить", callback_data="adm-pos:skip-image")]
+    ])
+
+
 def admin_pos_detail(pid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Изменить название", callback_data=f"adm-pos:edit-title:{pid}")],
@@ -51,6 +57,7 @@ def admin_pos_detail(pid: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Изменить количество", callback_data=f"adm-pos:edit-qty:{pid}")],
         [InlineKeyboardButton(text="Изменить вес", callback_data=f"adm-pos:edit-weight:{pid}")],
         [InlineKeyboardButton(text="Изменить габариты", callback_data=f"adm-pos:edit-dims:{pid}")],
+        [InlineKeyboardButton(text="Изменить изображение", callback_data=f"adm-pos:edit-img:{pid}")],
         [InlineKeyboardButton(text="Удалить", callback_data=f"adm-pos:delete:{pid}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="adm-pos:back-list")],
     ])
@@ -208,6 +215,7 @@ def admin_warehouse_detail_kb(warehouse_id: int) -> InlineKeyboardMarkup:
     builder.button(text="📝 Изменить Кв./Офис", callback_data=f"wh:edit:apartment:{warehouse_id}")
     builder.button(text="📝 Изменить Контактное лицо", callback_data=f"wh:edit:contact_name:{warehouse_id}")
     builder.button(text="📝 Изменить Телефон", callback_data=f"wh:edit:contact_phone:{warehouse_id}")
+    builder.button(text="📝 Изменить Комментарий", callback_data=f"wh:edit:comment:{warehouse_id}")
     # builder.button(text="📍 Обновить Координаты", callback_data=f"wh:edit:location:{warehouse_id}")
 
     builder.button(text="⬅️ Назад в админ-меню", callback_data="back-admin-main")

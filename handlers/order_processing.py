@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Union, Tuple
@@ -17,7 +18,7 @@ from database.managers.payments_manager import PaymentsManager
 from database.managers.product_position_manager import ProductPositionManager
 from database.managers.warehouse_manager import WarehouseManager
 from database.models.payments import PaymentStatus
-from handlers.client import client_router
+from handlers.client import client_router, cleanup_client_media
 from keyboards.client import (
     get_all_products, choice_of_delivery, delivery_address_select,
     confirm_create_order, confirm_geoposition_kb, get_main_inline_keyboard
@@ -189,13 +190,17 @@ async def create_yandex_delivery_claim(
         for item in order_items_from_db
     ]
 
+    final_comment = f"Комментарий заказчика: {order.comment}"
+    if warehouse.get('comment'):
+        final_comment = f"Комментарий отправителя: {warehouse.get('comment')}\n\n" + final_comment
+
     # 3. Вызываем API
     claim_id = await yandex_delivery_client.create_claim(
         items=items_for_api,
         client_info=client_info,  # <-- Теперь это client_info
         warehouse_info=warehouse,
         order_id=order_id,  # <-- Теперь это order_id
-        order_comment=order.comment
+        order_comment=final_comment
     )
 
     if claim_id:
@@ -227,6 +232,9 @@ async def cart_ops(call: CallbackQuery, state: FSMContext, product_position_mana
         if not cart:
             await call.answer(text="Корзина пуста", show_alert=True)
             return
+
+        await cleanup_client_media(call.bot, state, call.message.chat.id)
+
         await state.update_data(cart=cart)
         await state.set_state(CreateOrder.choose_delivery)
         await call.message.edit_text("Способ получения:", reply_markup=choice_of_delivery())
@@ -269,7 +277,9 @@ async def handle_delivery_choice(call: CallbackQuery, state: FSMContext, buyer_i
     else:
         # Если доставка, запускаем процесс ввода адреса
         await call.message.edit_text(
-            "Введите адрес доставки (город, улица, дом)"
+            "Введите адрес доставки через запятую (город, улица, дом).\n\n"
+            "Например: <b>Нижний Новгород, Большая Покровская, 1</b>",
+            parse_mode="HTML"
         )
         await state.set_state(CreateOrder.enter_address)
 
@@ -284,7 +294,8 @@ async def start_address_entry(call: CallbackQuery, state: FSMContext, buyer_info
     saved_address = await buyer_info_manager.get_address_by_tg(call.from_user.id)
 
     await call.message.edit_text(
-        "Введите основную часть адреса (Город, улица, дом):",
+        "Введите основную часть адреса через запятую (город, улица, дом).\n\n"
+        "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML",
         reply_markup=delivery_address_select(saved_address)  # Клавиатура с "Использовать сохраненный"
     )
     await state.set_state(CreateOrder.enter_address)
@@ -562,7 +573,6 @@ async def confirm_ok(
     await call.answer()
     data = await state.get_data()
 
-    # --- Получаем все данные из состояния для финальной операции ---
     cart = data.get("cart", {})
     delivery_way = data.get("delivery_way")
     address = data.get("address")
@@ -571,10 +581,8 @@ async def confirm_ok(
     delivery_cost = data.get("delivery_cost", 0.0)
     comment = data.get("comment")
 
-    # Рассчитываем итоговую сумму, которую нужно оплатить деньгами
-    final_amount_to_pay = total_goods + delivery_cost - used_bonus
+    final_amount_to_pay_float = total_goods + delivery_cost - used_bonus
 
-    # 1. Создаем заказ в БД со всеми данными
     order_id, err = await buyer_order_manager.create_order(
         tg_user_id=call.from_user.id,
         items=cart,
@@ -589,43 +597,108 @@ async def confirm_ok(
         await state.clear()
         return
 
-    # 2. Решаем, что делать дальше, на основе суммы к оплате
-    if final_amount_to_pay >= MIN_PAYMENT_AMOUNT:
-        # --- СЛУЧАЙ 1: Сумма достаточна, отправляем на оплату ---
+    if final_amount_to_pay_float >= MIN_PAYMENT_AMOUNT:
         try:
-            await call.message.delete()  # Удаляем сообщение с предпросмотром
+            await call.message.delete()
+
+            # ======================= НАЧАЛО ИСПРАВЛЕНИЙ =======================
+
+            # 1. РАССЧИТЫВАЕМ ИТОГОВУЮ СУММУ В КОПЕЙКАХ С ЯВНЫМ ОКРУГЛЕНИЕМ
+            # Это ключевой шаг для избежания ошибок с float
+            total_amount_kopecks = int(round(final_amount_to_pay_float * 100))
+
+            # Проверяем, что сумма все еще не слишком мала после округления
+            if total_amount_kopecks < int(MIN_PAYMENT_AMOUNT * 100):
+                # Эта логика скопирована из блока elif ниже для консистентности
+                await call.answer("Заказ отменен: сумма к оплате слишком мала.", show_alert=True)
+                await buyer_order_manager.cancel_order(order_id)
+                is_admin = call.from_user.id in get_admin_ids()
+                bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
+                await call.message.answer(
+                    text=f"❗️Сумма к оплате ({final_amount_to_pay_float:.2f} руб.)"
+                         f" меньше минимальной ({MIN_PAYMENT_AMOUNT} руб.). Заказ отменен.\n\n"
+                         "Выберите действие:\n"
+                         f"Накоплено бонусов: `{bonuses or 0}` руб.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_inline_keyboard(is_admin)
+                )
+                await state.clear()
+                return  # Важно выйти из функции здесь
+
+            # 2. ФОРМИРУЕМ ДАННЫЕ ДЛЯ ЧЕКА, ИСПОЛЬЗУЯ УЖЕ ПОДСЧИТАННЫЕ КОПЕЙКИ
+            receipt = {
+                "receipt": {
+                    "items": [
+                        {
+                            "description": f"Оплата товаров по заказу №{order_id}",
+                            "quantity": "1.00",
+                            "amount": {
+                                "value": f"{total_amount_kopecks / 100:.2f}",
+                                "currency": "RUB"
+                            },
+                            "vat_code": 1,  # "Без НДС" - это правильно, т.к. вы как ИП его не платите
+                            "payment_mode": "full_payment",
+                            "payment_subject": "commodity"
+                        }
+                    ]
+                    # tax_system_code здесь НЕТ, как и сказала поддержка
+                }
+            }
+
+            # --- НАЧАЛО БЛОКА ЛОГИРОВАНИЯ ---
+            prices_list = [LabeledPrice(label=f"Заказ №{order_id}", amount=total_amount_kopecks)]
+            request_data_for_logging = {
+                "chat_id": call.from_user.id, "title": f"Оплата заказа №{order_id}",
+                "description": f"Оплата ... на сумму {total_amount_kopecks / 100:.2f} руб.",
+                "payload": f"order_payment:{order_id}",
+                "provider_token": f"{PAYMENT_TOKEN[:12]}...{PAYMENT_TOKEN[-4:]}",
+                "currency": "RUB", "prices": [p.dict() for p in prices_list],
+                "need_email": True, "send_email_to_provider": True,
+                "provider_data (как Python dict)": receipt
+            }
+            print("\n" + "=" * 50)
+            print("--- [DEBUG] ПОДГОТОВКА РЕАЛЬНОГО ЗАПРОСА (confirm_ok) ---")
+            print(json.dumps(request_data_for_logging, indent=2, ensure_ascii=False))
+            print("=" * 50 + "\n")
+            # --- КОНЕЦ БЛОКА ЛОГИРОВАНИЯ ---
 
             payment_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text=f"💳 Оплатить {final_amount_to_pay:.2f} RUB", pay=True),
+                InlineKeyboardButton(text=f"💳 Оплатить {total_amount_kopecks / 100:.2f} RUB", pay=True),
                 InlineKeyboardButton(text="❌ Отменить", callback_data=f"cancel_invoice:{order_id}")
             ]])
 
+            # 3. ВЫСТАВЛЯЕМ СЧЕТ С ГАРАНТИРОВАННО КОРРЕКТНОЙ СУММОЙ В КОПЕЙКАХ
             await bot.send_invoice(
                 chat_id=call.from_user.id,
                 title=f"Оплата заказа №{order_id}",
-                description=f"Оплата товаров и доставки на сумму {final_amount_to_pay:.2f} руб.",
+                description=f"Оплата товаров и доставки на сумму {total_amount_kopecks / 100:.2f} руб.",
                 payload=f"order_payment:{order_id}",
                 provider_token=PAYMENT_TOKEN,
                 currency="RUB",
-                prices=[LabeledPrice(label=f"Заказ №{order_id}", amount=int(final_amount_to_pay * 100))],
-                reply_markup=payment_kb
+                prices=[LabeledPrice(label=f"Заказ №{order_id}", amount=total_amount_kopecks)],
+                # Используем наши копейки
+                reply_markup=payment_kb,
+                need_email=True,
+                send_email_to_provider=True,
+                provider_data=json.dumps(receipt)
             )
+            # ======================== КОНЕЦ ИСПРАВЛЕНИЙ ========================
+
             await state.set_state(CreateOrder.waiting_payment)
+
         except TelegramBadRequest as e:
             log.error(f"Ошибка при выставлении счета для заказа #{order_id}: {e}")
             await call.message.answer("❗️ Произошла ошибка при создании счета. Ваш заказ отменен.")
             await buyer_order_manager.cancel_order(order_id)
             await state.clear()
 
-    elif final_amount_to_pay > 0:
-        # --- СЛУЧАЙ 2: Сумма > 0, но < минимальной ---
+    elif final_amount_to_pay_float > 0:
         await call.answer("Заказ отменен: сумма к оплате слишком мала.", show_alert=True)
         await buyer_order_manager.cancel_order(order_id)
-
         is_admin = call.from_user.id in get_admin_ids()
         bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
         await call.message.edit_text(
-            text=f"❗️Сумма к оплате ({final_amount_to_pay:.2f} руб.)"
+            text=f"❗️Сумма к оплате ({final_amount_to_pay_float:.2f} руб.)"
                  f" меньше минимальной ({MIN_PAYMENT_AMOUNT} руб.). Заказ отменен.\n\n"
                  "Выберите действие:\n"
                  f"Накоплено бонусов: `{bonuses or 0}` руб.",
@@ -636,28 +709,18 @@ async def confirm_ok(
 
     else:
         # --- СЛУЧАЙ 3: Заказ полностью оплачен бонусами ---
+        # ... (этот блок кода остается без изменений) ...
         await buyer_order_manager.mark_order_as_paid_by_bonus(order_id)
         await call.message.edit_text("✅ Заказ успешно оплачен бонусами.")
-
-        # Получаем объект BuyerOrders
         order_object = await buyer_order_manager.get_order_by_id(order_id)
-
-        # Если это доставка, сразу создаем заявку в Яндексе
-        order_data = await buyer_order_manager.get_order_by_id(order_id)
-        if order_data:
+        if order_object:
             if delivery_way == 'delivery':
                 await create_yandex_delivery_claim(bot, order_id, call.from_user.id, buyer_order_manager,
                                                    buyer_info_manager, warehouse_manager, yandex_delivery_client)
-                # order_data = await buyer_order_manager.get_order_by_id(order_id)
-
             buyer_data = await buyer_info_manager.get_profile_by_tg(call.from_user.id)
-            # items_data = [dict(item._asdict()) for item in await buyer_order_manager.list_items_by_order_id(order_id)]
             items_list = await buyer_order_manager.list_items_by_order_id(order_id)
-
             admin_text, admin_kb = format_order_for_admin(order_object, buyer_data, items_list)
             await notify_admins(bot, text=admin_text, reply_markup=admin_kb)
-        # --- КОНЕЦ БЛОКА УВЕДОМЛЕНИЯ ---
-
         await state.clear()
 
 
@@ -914,3 +977,68 @@ async def refresh_delivery_status(
         # Эта проверка на случай, если ошибка все же возникнет
         if "message is not modified" not in str(e):
             log.error(f"Ошибка при обновлении статуса доставки для заказа #{order_id}: {e}")
+
+
+'''
+import json
+from aiogram import Bot, types
+from aiogram.types import LabeledPrice
+from aiogram.filters import Command
+
+from utils.config import PAYMENT_TOKEN
+
+@client_router.message(Command('testpayment'))
+async def test_payment_command(message: types.Message, bot: Bot):
+    test_amount_kopecks = 100 * 100
+
+    # --- САМАЯ ГЛАВНАЯ ЧАСТЬ ---
+    # Структура `provider_data` с вложенным `receipt`, но БЕЗ `tax_system_code`
+    provider_data_dict = {
+        "receipt": {
+            "items": [
+                {
+                    "description": "Тестовый товар (финальный, правильный)",
+                    "quantity": "1.00",
+                    "amount": { "value": "100.00", "currency": "RUB" },
+                    "vat_code": 1, # "Без НДС" - это правильно, т.к. вы как ИП его не платите
+                    "payment_mode": "full_payment",
+                    "payment_subject": "commodity"
+                }
+            ]
+            # tax_system_code здесь НЕТ, как и сказала поддержка
+        }
+    }
+
+    # Блок логирования для финальной проверки
+    prices_list = [LabeledPrice(label="Тестовый товар", amount=test_amount_kopecks)]
+    request_data_for_logging = {
+        "chat_id": message.chat.id, "title": "Тестовый счёт (финал)",
+        "description": "Проверка корректной структуры чека", "payload": "the_final_correct_test:123",
+        "provider_token": f"{PAYMENT_TOKEN[:12]}...{PAYMENT_TOKEN[-4:]}",
+        "currency": "RUB", "prices": [p.dict() for p in prices_list],
+        "need_email": True, "send_email_to_provider": True,
+        "provider_data (как Python dict)": provider_data_dict
+    }
+    print("\n" + "="*50)
+    print("--- [DEBUG] ФИНАЛЬНЫЙ КОРРЕКТНЫЙ ЗАПРОС ---")
+    print(json.dumps(request_data_for_logging, indent=2, ensure_ascii=False))
+    print("="*50 + "\n")
+
+    try:
+        await bot.send_invoice(
+            chat_id=message.chat.id,
+            title="Тестовый счёт (финал)",
+            description="Проверка корректной структуры чека",
+            payload="the_final_correct_test:123",
+            provider_token=PAYMENT_TOKEN,
+            currency="RUB",
+            prices=prices_list,
+            need_email=True,
+            send_email_to_provider=True,
+            provider_data=json.dumps(provider_data_dict)
+        )
+    except Exception as e:
+        error_text = f"Не удалось отправить тестовый инвойс: {e}"
+        print(error_text)
+        await message.answer(error_text)
+'''

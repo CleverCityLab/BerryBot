@@ -1,12 +1,14 @@
 import asyncio
 from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
 from typing import Union
 
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, FSInputFile
 
 from database.managers.buyer_order_manager import BuyerOrderManager
 from database.managers.warehouse_manager import WarehouseManager
@@ -23,7 +25,7 @@ from keyboards.admin import (admin_positions_list,
                              admin_create_warehouse_kb, admin_manage_admins_kb,
                              admin_confirm_delete_admin_kb,
                              admin_manage_add_back_kb,
-                             admin_confirm_geoposition_kb
+                             admin_confirm_geoposition_kb, admin_skip_image_kb
                              )
 from keyboards.client import get_main_inline_keyboard, confirm_geoposition_kb
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
@@ -32,6 +34,7 @@ from utils.constants import status_map
 from utils.decorators import admin_only
 from utils.logger import get_logger
 from utils.phone import normalize_phone
+from utils.save_image import ensure_dir, ext_from_mime_or_name, MEDIA_DIR, MEDIA_PUBLIC_ROOT
 from utils.secrets import get_admin_ids, add_admin_id, remove_admin_id
 
 log = get_logger("[Bot.Admin]")
@@ -84,12 +87,14 @@ class PosEdit(StatesGroup):
     add_length = State()  # Длина
     add_width = State()  # Ширина
     add_height = State()  # Высота
+    add_image = State()
 
     edit_title = State()
     edit_price = State()
     edit_qty = State()
     edit_weight = State()
     edit_dims = State()
+    edit_img = State()
 
 
 class AdminNotify(StatesGroup):
@@ -103,6 +108,7 @@ class WarehouseEdit(StatesGroup):
     waiting_for_new_address_text = State()
     confirm_new_address_location = State()
     waiting_for_contact_phone = State()
+    waiting_for_comment = State()
 
 
 class WarehouseCreate(StatesGroup):
@@ -114,6 +120,7 @@ class WarehouseCreate(StatesGroup):
     waiting_for_apartment = State()
     waiting_for_contact_name = State()
     waiting_for_contact_phone = State()
+    waiting_for_comment = State()
 
 
 class AdminManagement(StatesGroup):
@@ -300,15 +307,26 @@ async def adm_pos_add_width(msg: Message, state: FSMContext):
 
 @admin_router.message(PosEdit.add_height)
 @admin_only
-async def adm_pos_add_height_and_create(msg: Message, state: FSMContext, product_position_manager):
+async def adm_pos_add_height(msg: Message, state: FSMContext):
     height = await _parse_float(msg.text)
     if height is None:
         await msg.answer("Высота должна быть положительным числом (например: 0.1).")
         return
 
+    await state.update_data(height_m=height)
+    await state.set_state(PosEdit.add_image)
+    await msg.answer(
+        "Отправьте Изображение или нажмите «Пропустить»",
+        parse_mode="Markdown",
+        reply_markup=admin_skip_image_kb()
+    )
+
+
+@admin_router.callback_query(F.data == "adm-pos:skip-image")
+@admin_only
+async def adm_pos_skip_image(call: CallbackQuery, state: FSMContext, product_position_manager):
     data = await state.get_data()
 
-    # Вызываем обновленный метод создания позиции
     pid = await product_position_manager.create_position(
         title=data["title"],
         price=data["price"],
@@ -316,16 +334,66 @@ async def adm_pos_add_height_and_create(msg: Message, state: FSMContext, product
         weight_kg=data["weight_kg"],
         length_m=data["length_m"],
         width_m=data["width_m"],
-        height_m=height  # Последний параметр берем напрямую
+        height_m=data["height_m"],
+        image_path=None,
+    )
+
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    text = format_product_info(pos)
+
+    await state.clear()
+    await call.message.edit_text("Позиция *успешно добавлена без изображения* ✅", parse_mode="Markdown")
+    await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+    await call.answer()
+
+
+@admin_router.message(PosEdit.add_image)
+@admin_only
+async def adm_pos_add_image(msg: Message, state: FSMContext, product_position_manager):
+    ensure_dir(MEDIA_DIR)
+
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        ext = ".jpg"
+    elif msg.document:
+        doc = msg.document
+        if not (doc.mime_type and doc.mime_type.startswith("image/")):
+            await msg.answer("Это не изображение. Пришлите фото или документ-изображение.")
+            return
+        file_id = doc.file_id
+        ext = ext_from_mime_or_name(doc.mime_type, doc.file_name)
+    else:
+        await msg.answer("Пришлите изображение: как фото или как документ.")
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"product_{stamp}{ext}"
+    abs_path = MEDIA_DIR / filename
+
+    await msg.bot.download(file_id, destination=abs_path)
+
+    rel_path = f"{MEDIA_PUBLIC_ROOT}/{filename}"
+
+    data = await state.get_data()
+    pid = await product_position_manager.create_position(
+        title=data["title"],
+        price=data["price"],
+        quantity=data["qty"],
+        weight_kg=data["weight_kg"],
+        length_m=data["length_m"],
+        width_m=data["width_m"],
+        height_m=data["height_m"],
+        image_path=rel_path,
     )
     await state.clear()
 
     pos = await product_position_manager.get_order_position_by_id(pid)
-
-    # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
-
     await msg.answer("Позиция *успешно добавлена* ✅", parse_mode="Markdown")
+
+    await msg.answer_photo(
+        photo=FSInputFile(abs_path)
+    )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -369,6 +437,11 @@ async def adm_pos_edit_title_set(msg: Message, state: FSMContext, product_positi
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Название *успешно изменено* ✅", parse_mode="Markdown")
+
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -405,6 +478,11 @@ async def adm_pos_edit_price_set(msg: Message, state: FSMContext, product_positi
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Цена *успешно изменена* ✅", parse_mode="Markdown")
+
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -456,6 +534,10 @@ async def adm_pos_edit_weight_set(msg: Message, state: FSMContext, product_posit
     # Показываем обновленную карточку товара
     pos = await product_position_manager.get_order_position_by_id(pid)
     text = format_product_info(pos)  # Выносим форматирование в отдельную функцию
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -502,6 +584,10 @@ async def adm_pos_edit_dims_set(msg: Message, state: FSMContext, product_positio
 
     pos = await product_position_manager.get_order_position_by_id(pid)
     text = format_product_info(pos)
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -522,6 +608,10 @@ async def adm_pos_edit_qty_set(msg: Message, state: FSMContext, product_position
     # Обновляем текст вывода, чтобы показать новые данные
     text = format_product_info(pos)
     await msg.answer("Доступное количество *успешно изменено* ✅", parse_mode="Markdown")
+    if pos['image_path'] is not None:
+        await msg.answer_photo(
+            photo=FSInputFile(pos['image_path'])
+        )
     await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
 
 
@@ -538,6 +628,82 @@ async def adm_pos_delete_confirm(call: CallbackQuery):
         return
 
 
+@admin_router.callback_query(F.data.startswith("adm-pos:edit-img:"))
+@admin_only
+async def adm_pos_edit_img_start(call: CallbackQuery, state: FSMContext):
+    try:
+        pid = int(call.data.split(":")[2])
+    except (ValueError, IndexError):
+        await call.answer("Ошибка в данных кнопки.", show_alert=True)
+        return
+
+    await state.update_data(pid=pid)
+    await state.set_state(PosEdit.edit_img)
+    try:
+        await call.message.edit_text(
+            "Отправьте новое *изображение*:",
+            parse_mode="Markdown",
+            reply_markup=admin_edit_back(pid)
+        )
+        await call.answer()
+    except TelegramBadRequest as e:
+        await handle_telegram_error(e, call=call)
+
+
+@admin_router.message(PosEdit.edit_img)
+@admin_only
+async def adm_pos_edit_img_set(msg: Message, state: FSMContext, product_position_manager):
+    ensure_dir(MEDIA_DIR)
+
+    if msg.photo:
+        file_id = msg.photo[-1].file_id
+        ext = ".jpg"
+    elif msg.document:
+        doc = msg.document
+        if not (doc.mime_type and doc.mime_type.startswith("image/")):
+            await msg.answer("Это не изображение. Пришлите фото или документ-изображение.")
+            return
+
+        file_id = doc.file_id
+        ext = ext_from_mime_or_name(doc.mime_type, doc.file_name)
+    else:
+        await msg.answer("Пришлите изображение: как фото или как документ.")
+        return
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"product_{stamp}{ext}"
+    abs_path = MEDIA_DIR / filename
+    await msg.bot.download(file_id, destination=abs_path)
+
+    rel_path = f"{MEDIA_PUBLIC_ROOT}/{filename}"
+    data = await state.get_data()
+    pid = data["pid"]
+
+    try:
+        old = await product_position_manager.get_order_position_by_id(pid)
+        old_path = old.get("image_path")
+        if old_path:
+            old_abs = (MEDIA_DIR / Path(old_path).name)
+            if old_abs.is_file():
+                old_abs.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    pos = await product_position_manager.get_order_position_by_id(pid)
+    text = format_product_info(pos)
+
+    await state.clear()
+
+    await product_position_manager.update_image(pid, rel_path)
+
+    await msg.answer("Позиция *успешно добавлена* ✅", parse_mode="Markdown")
+
+    await msg.answer_photo(
+        photo=FSInputFile(abs_path)
+    )
+    await msg.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+
+
 @admin_router.callback_query(F.data.startswith("adm-pos:delete-yes:"))
 @admin_only
 async def adm_pos_delete_yes(call: CallbackQuery, product_position_manager):
@@ -549,7 +715,11 @@ async def adm_pos_delete_yes(call: CallbackQuery, product_position_manager):
         if pos:
             # Обновляем текст вывода, чтобы показать новые данные
             text = format_product_info(pos)
-            await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
+            if pos['image_path'] is not None:
+                await call.message.answer_photo(
+                    photo=FSInputFile(pos['image_path'])
+                )
+            await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
         return
     items = await product_position_manager.list_all_order_positions()
     try:
@@ -1009,7 +1179,8 @@ def format_warehouse_info(warehouse_data: dict) -> str:
         f"Контактное лицо: {warehouse_data.get('contact_name', 'не указано')}\n"
         f"Телефон: {warehouse_data.get('contact_phone', 'не указан')}\n"
         f"Координаты (шир, долг): `{warehouse_data.get('latitude')},"
-        f" {warehouse_data.get('longitude')}`"
+        f" {warehouse_data.get('longitude')}`\n"
+        f"Комментарий курьеру: {warehouse_data.get('comment') if warehouse_data.get('comment') else 'Не указан'}"
     )
 
 
@@ -1087,7 +1258,8 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
         await state.set_state(WarehouseEdit.waiting_for_new_address_text)
         await state.update_data(warehouse_id=warehouse_id)
         await call.message.edit_text(
-            "Введите новый адрес склада (город, улица, дом):"
+            "Введите основную часть адреса <b>склада</b> через запятую (город, улица, дом).\n\n"
+            "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML"
         )
         return
 
@@ -1104,7 +1276,8 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
         "floor": "этаж",
         "apartment": "номер квартиры/офиса",
         "contact_name": "имя контактного лица",
-        "contact_phone": "контактный телефон"
+        "contact_phone": "контактный телефон",
+        "comment": "комментарий"
     }
 
     prompt_text = field_map.get(field_to_edit)
@@ -1116,7 +1289,7 @@ async def start_edit_warehouse_field(call: CallbackQuery, state: FSMContext):
     await state.update_data(field_to_edit=field_to_edit, warehouse_id=warehouse_id)
 
     # Используем parse_mode="HTML" для жирного шрифта
-    await call.message.edit_text(f"Введите новое значение для поля '<b>{prompt_text}</b>':", parse_mode="HTML")
+    await call.message.edit_text(f"Введите новое значение для поля <b>{prompt_text}</b>:", parse_mode="HTML")
 
 
 # --- Хендлер, который ловит ответ от админа с новым значением ---
@@ -1179,8 +1352,11 @@ async def adm_pos_detail(call: CallbackQuery, product_position_manager):
     # Формируем новый, расширенный текст
     text = format_product_info(pos)
     try:
-        await call.message.edit_text(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
-        await call.answer()
+        if pos['image_path'] is not None:
+            await call.message.answer_photo(
+                photo=FSInputFile(pos['image_path'])
+            )
+        await call.message.answer(text, parse_mode="Markdown", reply_markup=admin_pos_detail(pid))
     except TelegramBadRequest as e:
         await handle_telegram_error(e, call=call)
         return
@@ -1196,7 +1372,7 @@ async def start_create_warehouse(call: CallbackQuery, state: FSMContext):
     """Начинает FSM для создания склада."""
     await state.set_state(WarehouseCreate.waiting_for_name)
     await call.message.edit_text(
-        "*Шаг 1/7:* Введите *название* склада (например, `Основной склад`):", parse_mode="Markdown")
+        "*Шаг 1/8:* Введите *название* склада (например, `Основной склад`):", parse_mode="Markdown")
     await call.answer()
 
 
@@ -1206,7 +1382,8 @@ async def process_create_warehouse_name(msg: Message, state: FSMContext):
     await state.update_data(name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_address)
     await msg.answer(
-        "*Шаг 2/7:* Теперь введите *адрес* склада (город, улица, дом).",
+        "*Шаг 2/8:* Теперь введите *адрес* склада (город, улица, дом) через запятую.\n"
+        "Например: *Нижний Новгород, Большая Покровская, 1*",
         parse_mode="Markdown")
 
 
@@ -1241,7 +1418,7 @@ async def process_create_warehouse_manual_location(msg: Message, state: FSMConte
     await state.set_state(WarehouseCreate.waiting_for_porch)
     await state.set_state(WarehouseCreate.waiting_for_porch)
     await msg.answer(
-        "*Шаг 3/7:* Точка принята! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
+        "*Шаг 3/8:* Точка принята! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
         parse_mode="Markdown")
 
 
@@ -1259,7 +1436,7 @@ async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, stat
     if action == "confirm":
         await state.set_state(WarehouseCreate.waiting_for_porch)
         await call.message.answer(
-            "*Шаг 3/7:* Отлично! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
+            "*Шаг 3/8:* Отлично! Теперь введите *подъезд* (или отправьте прочерк `-`, если его нет):",
             parse_mode="Markdown")
         return
 
@@ -1269,7 +1446,7 @@ async def process_create_warehouse_geoposition_confirm(call: CallbackQuery, stat
 async def process_create_warehouse_porch(msg: Message, state: FSMContext):
     await state.update_data(porch=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_floor)
-    await msg.answer("*Шаг 4/7*: Принято. Введите *этаж* (или `-`):", parse_mode="Markdown")
+    await msg.answer("*Шаг 4/8*: Принято. Введите *этаж* (или `-`):", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_floor)
@@ -1277,7 +1454,7 @@ async def process_create_warehouse_porch(msg: Message, state: FSMContext):
 async def process_create_warehouse_floor(msg: Message, state: FSMContext):
     await state.update_data(floor=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_apartment)
-    await msg.answer("*Шаг 5/7*: Принято. Введите *номер квартиры/офиса* (или `-`):", parse_mode="Markdown")
+    await msg.answer("*Шаг 5/8*: Принято. Введите *номер квартиры/офиса* (или `-`):", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_apartment)
@@ -1285,7 +1462,7 @@ async def process_create_warehouse_floor(msg: Message, state: FSMContext):
 async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
     await state.update_data(apartment=msg.text.strip() if msg.text.strip() != '-' else None)
     await state.set_state(WarehouseCreate.waiting_for_contact_name)
-    await msg.answer("*Шаг 6/7:* Адрес полностью собран! Теперь введите *имя контактного лица*:",
+    await msg.answer("*Шаг 6/8:* Адрес полностью собран! Теперь введите *имя контактного лица*:",
                      parse_mode="Markdown")
 
 
@@ -1294,13 +1471,12 @@ async def process_create_warehouse_apartment(msg: Message, state: FSMContext):
 async def process_create_warehouse_contact_name(msg: Message, state: FSMContext):
     await state.update_data(contact_name=msg.text.strip())
     await state.set_state(WarehouseCreate.waiting_for_contact_phone)
-    await msg.answer("*Шаг 7/7:* И последнее: введите *контактный телефон* склада:", parse_mode="Markdown")
+    await msg.answer("*Шаг 7/8:* Введите *контактный телефон* склада:", parse_mode="Markdown")
 
 
 @admin_router.message(WarehouseCreate.waiting_for_contact_phone)
 @admin_only
-async def process_create_warehouse_contact_phone_and_save(msg: Message, state: FSMContext,
-                                                          warehouse_manager: WarehouseManager):
+async def process_create_warehouse_contact_phone(msg: Message, state: FSMContext):
     phone_e164 = normalize_phone(msg.text.strip())
 
     if phone_e164 is None:
@@ -1311,6 +1487,17 @@ async def process_create_warehouse_contact_phone_and_save(msg: Message, state: F
         return
 
     await state.update_data(contact_phone=msg.text.strip())
+    await state.set_state(WarehouseCreate.waiting_for_comment)
+    await msg.answer("*Шаг 8/8:* Введите *комментарий* для курьера о складе (или `-`):", parse_mode="Markdown")
+
+
+@admin_router.message(WarehouseCreate.waiting_for_comment)
+@admin_only
+async def process_create_warehouse_comment_and_save(msg: Message, state: FSMContext,
+                                                    warehouse_manager: WarehouseManager):
+    comment = msg.text.strip() if msg.text.strip() != '-' else None
+
+    await state.update_data(comment=comment)
     data = await state.get_data()
     await state.clear()
 

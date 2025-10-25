@@ -71,7 +71,8 @@ CREATE TABLE product_position
     weight_kg NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
     length_m  NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
     width_m   NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
-    height_m  NUMERIC(7, 3) NOT NULL DEFAULT 0.1
+    height_m  NUMERIC(7, 3) NOT NULL DEFAULT 0.1,
+    image_path TEXT
 );
 
 --
@@ -153,7 +154,8 @@ CREATE TABLE warehouses
     floor         VARCHAR(10), -- Этаж
     apartment     VARCHAR(10), -- Квартира/офис
     is_active     BOOLEAN        NOT NULL DEFAULT TRUE,
-    is_default    BOOLEAN        NOT NULL DEFAULT FALSE
+    is_default    BOOLEAN        NOT NULL DEFAULT FALSE,
+    comment TEXT
 );
 
 -- Добавим уникальный индекс, чтобы только один склад мог быть по умолчанию

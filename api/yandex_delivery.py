@@ -219,7 +219,7 @@ class YandexDeliveryClient:
             destination_address["sflat"] = client_info["apartment"]
 
         base_comment = f"Доставка заказа #{order_id} из Telegram-бота."
-        full_comment = f"Комментарий клиента: {order_comment}. {base_comment}" if order_comment else base_comment
+        full_comment = f"Комментарии: {order_comment}. {base_comment}" if order_comment else base_comment
 
         # --- 4. Формируем финальный, правильный payload ---
         payload = {

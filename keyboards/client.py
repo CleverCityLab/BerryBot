@@ -107,7 +107,7 @@ def get_all_products(
         products: list[dict],
         cart: dict[int, int],
         page: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
 ) -> InlineKeyboardMarkup:
     total = len(products)
     total_pages = max(1, ceil(total / page_size))

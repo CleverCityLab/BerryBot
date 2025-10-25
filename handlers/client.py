@@ -1,9 +1,13 @@
+from math import ceil
+from pathlib import Path
+
 from aiogram import Router, F, Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton, \
+    InputMediaPhoto, FSInputFile
 
 from api.yandex_delivery import geocode_address, YandexDeliveryClient
 from database.managers.buyer_info_manager import BuyerInfoManager
@@ -26,6 +30,7 @@ from utils.constants import status_map, delivery_map
 from utils.logger import get_logger
 from utils.notifications import notify_admins
 from utils.phone import normalize_phone
+from utils.save_image import MEDIA_PUBLIC_ROOT, MEDIA_DIR
 from utils.secrets import get_admin_ids
 
 MIN_PAYMENT_AMOUNT = 60
@@ -225,6 +230,7 @@ async def cb_my_orders(call: CallbackQuery, buyer_order_manager) -> None:
 @client_router.callback_query(F.data == "back-main")
 async def cb_back_main(call: CallbackQuery, state: FSMContext, buyer_info_manager):
     await call.answer()
+    await cleanup_client_media(call.bot, state, call.message.chat.id)
     is_admin = call.from_user.id in get_admin_ids()
     bonuses = await buyer_info_manager.get_user_bonuses_by_tg(call.from_user.id)
     try:
@@ -580,16 +586,102 @@ def _text_cart_preview(items: list[dict], total: int, delivery_way: str, address
     return "\n".join(lines)
 
 
+def abs_image_path(rel_path: str) -> str:
+    # rel_path вида 'product_images/xxx.jpg' -> абсолютный путь
+    p = Path(rel_path)
+    if p.is_absolute():
+        return str(p)
+    # отрезаем префикс 'product_images/'
+    rel_name = str(p)
+    if rel_name.startswith(f"{MEDIA_PUBLIC_ROOT}/"):
+        rel_name = rel_name[len(MEDIA_PUBLIC_ROOT) + 1:]
+    return str(MEDIA_DIR / rel_name)
+
+
+CLIENT_MEDIA_IDS_KEY = "client_media_msg_ids"
+
+
+async def cleanup_client_media(bot, state, chat_id: int):
+    data = await state.get_data()
+    ids = data.get(CLIENT_MEDIA_IDS_KEY, [])
+    for mid in ids:
+        try:
+            await bot.delete_message(chat_id, mid)
+        except TelegramBadRequest:
+            pass
+    await state.update_data(**{CLIENT_MEDIA_IDS_KEY: []})
+
+
+async def send_products_album(target: Message | CallbackQuery, products_page: list[dict], state):
+    if isinstance(target, Message):
+        chat_id = target.chat.id
+        base = target
+        bot = target.bot
+    else:
+        chat_id = target.message.chat.id
+        base = target.message
+        bot = target.bot
+
+    await cleanup_client_media(bot, state, chat_id)
+
+    if not products_page:
+        return
+
+    media: list[InputMediaPhoto] = []
+    lines: list[str] = []
+
+    for i, p in enumerate(products_page, start=1):
+        img = p.get("image_path")
+        if not img:
+            continue
+        path = abs_image_path(img)
+        lines.append(f"{i}) {p['title']} — {p['price']} ₽")
+        media.append(InputMediaPhoto(media=FSInputFile(path)))
+        if len(media) == 10:
+            break
+
+    if not media:
+        return
+
+    media[-1].caption = "\n".join(lines)
+    media[-1].parse_mode = "Markdown"
+
+    try:
+        msgs = await base.answer_media_group(media=media)
+    except TelegramBadRequest:
+        for m in media:
+            m.caption = None
+        msgs = await base.answer_media_group(media=media)
+        await base.answer("\n".join(lines), parse_mode="Markdown")
+
+    await state.update_data(**{CLIENT_MEDIA_IDS_KEY: [m.message_id for m in msgs]})
+
+
 @client_router.callback_query(F.data.startswith("cart:page:"))
 async def on_cart_page(call: CallbackQuery, state: FSMContext, product_position_manager):
-    page = int(call.data.split(":")[-1])
+    try:
+        page = int(call.data.split(":")[-1])
+    except ValueError:
+        await call.answer()
+        return
 
     data = await state.get_data()
     cart: dict[int, int] = data.get("cart", {})
     products = await product_position_manager.list_not_empty_order_positions()
 
-    kb = get_all_products(products, cart, page=page, page_size=20)
-    await call.message.edit_reply_markup(reply_markup=kb)
+    total_pages = max(1, ceil(len(products) / 10))
+    page = max(1, min(page, total_pages))
+    await state.update_data(page=page)
+
+    start = (page - 1) * 10
+    end = start + 10
+    await send_products_album(call, products[start:end], state)
+
+    kb = get_all_products(products, cart, page=page)
+    try:
+        await call.message.edit_text("Выберите товары:", reply_markup=kb)
+    except Exception:
+        await call.message.edit_reply_markup(reply_markup=kb)
     await call.answer()
 
 
@@ -597,22 +689,38 @@ async def on_cart_page(call: CallbackQuery, state: FSMContext, product_position_
 async def back_from_delivery_to_cart(call: CallbackQuery, state: FSMContext, product_position_manager):
     data = await state.get_data()
     cart: dict[int, int] = data.get("cart", {})
+    page: int = data.get("page", 1)
+
     products = await product_position_manager.list_not_empty_order_positions()
 
+    total_pages = max(1, ceil(len(products) / 10))
+    page = max(1, min(page, total_pages))
     await state.set_state(CreateOrder.choose_products)
-    await call.message.edit_text(
-        "Выберите нужные позиции:",
-        reply_markup=get_all_products(products, cart)
-    )
+    await state.update_data(page=page)
+
+    start = (page - 1) * 10
+    end = start + 10
+    await send_products_album(call, products[start:end], state)
+
+    kb = get_all_products(products, cart, page=page)
+    try:
+        await call.message.edit_text("Выберите товары:", reply_markup=kb)
+    except Exception:
+        await call.message.edit_reply_markup(reply_markup=kb)
     await call.answer()
 
 
 @client_router.callback_query(F.data == "create-order")
 async def start_create(call: CallbackQuery, state: FSMContext, product_position_manager: ProductPositionManager):
     await state.clear()
-    await state.update_data(cart={})
+    await state.update_data(cart={}, page=1)
     products = await product_position_manager.list_not_empty_order_positions()
-    await call.message.edit_text("Выберите товары:", reply_markup=get_all_products(products, {}))
+    start, end = 0, 10
+    await send_products_album(call, products[start:end], state)
+
+    kb = get_all_products(products, cart={}, page=1)
+    await call.message.edit_text("Выберите товары:", reply_markup=kb)
+
     await state.set_state(CreateOrder.choose_products)
     await call.answer()
 
@@ -649,7 +757,8 @@ async def handle_address_source_choice(
     action = call.data.split(":")[1]
 
     if action == "enter":
-        await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
+        await call.message.edit_text("Введите основную часть адреса через запятую (город, улица, дом).\n\n"
+                                     "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML")
         return
 
     if action == "use_saved":
@@ -657,7 +766,8 @@ async def handle_address_source_choice(
 
         if not saved_address:
             await call.message.answer("У вас нет сохраненного адреса. Пожалуйста, введите его вручную.")
-            await call.message.edit_text("Введите основную часть адреса (Город, улица, дом):")
+            await call.message.edit_text("Введите основную часть адреса через запятую (город, улица, дом).\n\n"
+                                         "Например: <b>Нижний Новгород, Большая Покровская, 1</b>", parse_mode="HTML")
             return
 
         await call.message.edit_text("⏳ Ищу сохраненный адрес на карте...")
